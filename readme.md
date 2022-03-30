@@ -23,9 +23,7 @@ Submit all code via the Gradescope. For instructions on how to submit individual
 
 Throughout the project, we encourage you to keep notes on what you have done, how you have approached each part of the project, and what resources you used in preparing your work. We have provided you with a prototype file, `readme-student.md` that you should use throughout the project.
 
-Submit all readmes via Gradescope.
-
-> Note: you may choose to submit a PDF version of this file (`readme-student.pdf`) in place of the markdown version. The submission script will automatically detect and submit this file if it is present in the project root directory. If you submit both files, we will give the PDF version preference.
+Submit your ReadMe in pdf format on canvas. There is no limit on the number of times you may submit your ReadMe. Your last submission before the deadline will be graded. 
 
 ## Directions
 

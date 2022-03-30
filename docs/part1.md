@@ -117,9 +117,9 @@ For Parts 1 & 2 you will have a limit of no more than 50 submissions between now
 
 We strongly encourage you to think about testing your own code.  Test driven development is a standard technique for software, including systems software.  The auto-grader is a _grader_ and not a test suite.
 
-Note: your project report (10% of your grade for Project 4) is submitted on **Canvas** in either markdown or PDF format.
+Note: your project report (10% of your grade for Project 4) is submitted on **Canvas** in PDF format.
 
-**Note**: There is no limit to the number of times you may submit your **readme-student.md** or **readme-student.pdf** file.
+**Note**: There is no limit to the number of times you may submit your **readme-student.pdf** file.
 
 The Project 4 grading is a little different from the other projects.  So, you **may** experience much longer wait times with Project 4.
 
