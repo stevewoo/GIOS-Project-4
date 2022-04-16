@@ -16,6 +16,9 @@
 #include "proto-src/dfs-service.grpc.pb.h"
 #include "dfslib-shared-p1.h"
 
+using namespace std;
+
+
 using grpc::Status;
 using grpc::Server;
 using grpc::StatusCode;
@@ -25,6 +28,11 @@ using grpc::ServerContext;
 using grpc::ServerBuilder;
 
 using dfs_service::DFSService;
+
+// using dfs_service::fileName;
+// using dfs_service::fileSegment;
+
+using namespace dfs_service;
 
 
 //
@@ -88,6 +96,149 @@ public:
     // Add your additional code here, including
     // implementations of your protocol service methods
     //
+
+    // Status MyMethod(ServerContext* context, const MyMessageType* request, ServerWriter<MySegmentType> *writer) override {
+
+    //      /** code implementation here **/
+    //  }
+
+    Status StoreFile(ServerContext *context, ServerReader<fileSegment> *reader, fileResponse *response) override {
+
+        // get file name
+        fileSegment chunk;
+        reader->Read(&chunk);
+        const string &file_name = chunk.file_name();
+        printf("Received: %s\n", file_name.c_str());
+
+        const string &full_path = WrapPath(file_name);
+
+        ofstream server_file;
+
+        // open file to be written
+        server_file.open(full_path);
+        printf("Storing %s\n", full_path.c_str());
+
+        while(reader->Read(&chunk)){ // TODO close
+
+            //printf("Reading chunk\n");
+
+            const string &contents = chunk.data();
+            server_file << contents;
+        }
+        server_file.close();
+
+        response->set_file_name(file_name);
+
+        //Status status = reader->Finish();
+
+        printf("Completed Store\n");
+
+        return Status::OK;
+
+    }
+
+    Status FetchFile(ServerContext *context, const fileName* request, ServerWriter<fileSegment> *writer) override {
+
+        // get file path
+        const string &full_path = WrapPath(request->file_name());
+
+        // check file exists
+        struct stat file_status;   
+
+
+        if(stat (full_path.c_str(), &file_status) != 0){
+            // file not found
+            printf("File not found: %s\n",full_path.c_str());
+            return Status(StatusCode::NOT_FOUND, "File not found");
+        }
+        else{ // send it
+
+            // get size
+            int file_size = file_status.st_size;
+
+            fileSegment chunk;
+
+            // input file stream
+            ifstream server_file;
+            server_file.open(full_path);
+
+            int total_bytes_sent = 0;
+            while(total_bytes_sent < file_size){
+
+                if (context->IsCancelled()) {
+                    return Status(StatusCode::CANCELLED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
+                }
+
+                char buffer[BUFFER_SIZE];
+                int bytes_to_send;
+                int total_bytes_remaining = file_size - total_bytes_sent;
+                (total_bytes_remaining > BUFFER_SIZE) ? (bytes_to_send = BUFFER_SIZE) : (bytes_to_send = total_bytes_remaining);
+
+                server_file.read(buffer, bytes_to_send); // TODO close
+                chunk.set_data(buffer, bytes_to_send);
+                writer->Write(chunk);
+
+                total_bytes_sent += bytes_to_send;
+
+            }
+            server_file.close();
+            
+            
+            printf("Sent %s to client\n", full_path.c_str());
+
+        }
+        return Status::OK;
+
+    }
+
+    Status DeleteFile(ServerContext *context, const fileName* request, fileResponse *response) override {
+
+        // get file path
+        const string &full_path = WrapPath(request->file_name());
+
+        // check file exists
+        struct stat buffer;   
+        if(stat (full_path.c_str(), &buffer) != 0){
+            // file not found
+            printf("File not found: %s\n",full_path.c_str());
+            return Status(StatusCode::NOT_FOUND, "File not found");
+        }
+        if (context->IsCancelled()) {
+            return Status(StatusCode::CANCELLED, "Server abandoned Delete: Deadline exceeded or client cancelled");
+        }
+
+        // delete it
+        remove(full_path.c_str()); // TODO error check
+        printf("removed %s\n",full_path.c_str());
+        return Status::OK;
+
+    }
+
+    Status FileStatus(ServerContext* context, const fileName* request, fileStatusResponse *response) override {
+
+
+        // get file path
+        const string &full_path = WrapPath(request->file_name());
+
+        // check file exists
+        struct stat buffer;   
+        if(stat (full_path.c_str(), &buffer) != 0){
+            // file not found
+            printf("File not found: %s\n",full_path.c_str());
+            return Status(StatusCode::NOT_FOUND, "File not found");
+        }
+        if (context->IsCancelled()) {
+            return Status(StatusCode::CANCELLED, "Server abandoned Status: Deadline exceeded or client cancelled");
+        }
+        
+        return Status::OK;
+
+
+    }
+
+
+
+    
 
 
 };

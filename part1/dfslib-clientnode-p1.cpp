@@ -16,6 +16,8 @@
 #include <sys/inotify.h>
 #include <grpcpp/grpcpp.h>
 
+using namespace std;
+
 #include "dfslib-shared-p1.h"
 #include "proto-src/dfs-service.grpc.pb.h"
 #include "dfslib-clientnode-p1.h"
@@ -26,6 +28,11 @@ using grpc::StatusCode;
 using grpc::ClientWriter;
 using grpc::ClientReader;
 using grpc::ClientContext;
+
+using namespace dfs_service;
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
+
 
 // 
 // STUDENT INSTRUCTION:
@@ -43,6 +50,9 @@ using grpc::ClientContext;
 DFSClientNodeP1::DFSClientNodeP1() : DFSClientNode() {}
 
 DFSClientNodeP1::~DFSClientNodeP1() noexcept {}
+
+
+
 
 StatusCode DFSClientNodeP1::Store(const std::string &filename) {
 
@@ -64,6 +74,75 @@ StatusCode DFSClientNodeP1::Store(const std::string &filename) {
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    ClientContext context;
+
+    // set timeout
+    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
+    context.set_deadline(deadline);
+
+    //fileName request;
+    fileResponse response;
+    //request.set_file_name(filename);
+    const string &full_path = WrapPath(filename);
+
+    ifstream client_file;
+    fileSegment chunk;
+    unique_ptr<ClientWriter<fileSegment>> writer = service_stub->StoreFile(&context, &response);
+
+    // check file exists
+    struct stat file_status;   
+    if(stat (full_path.c_str(), &file_status) != 0){
+        // file not found
+        printf("File not found on client: %s\n",full_path.c_str());
+        return StatusCode::NOT_FOUND;
+    }
+
+    // send file name
+    chunk.set_file_name(filename);
+    writer->Write(chunk);
+
+    printf("Sent filename: %s\n", filename.c_str());
+
+
+    // get size
+    int file_size = file_status.st_size;
+
+    client_file.open(full_path);
+
+    int total_bytes_sent = 0;
+    while(total_bytes_sent < file_size){
+
+        char buffer[BUFFER_SIZE];
+        int bytes_to_send;
+        int total_bytes_remaining = file_size - total_bytes_sent;
+        (total_bytes_remaining > BUFFER_SIZE) ? (bytes_to_send = BUFFER_SIZE) : (bytes_to_send = total_bytes_remaining);
+
+        client_file.read(buffer, bytes_to_send); // TODO close
+        chunk.set_data(buffer, bytes_to_send);
+        writer->Write(chunk);
+
+        total_bytes_sent += bytes_to_send;
+
+    }
+    client_file.close();
+    
+    
+    printf("Sent %s to server\n", full_path.c_str());
+
+    Status status = writer->Finish();
+
+    if (!status.ok()) { // TODO close
+
+        if (status.error_code() == StatusCode::INTERNAL) {
+            return StatusCode::CANCELLED;
+        }
+
+    }
+
+    printf("Completed Store\n");
+
+
 }
 
 
@@ -88,6 +167,51 @@ StatusCode DFSClientNodeP1::Fetch(const std::string &filename) {
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    ClientContext context;
+
+    // set timeout
+    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
+    context.set_deadline(deadline);
+
+    fileName request;
+    request.set_file_name(filename);
+    const string &full_path = WrapPath(filename);
+
+    ofstream client_file;
+    fileSegment chunk;
+    unique_ptr<ClientReader<fileSegment>> reader = service_stub->FetchFile(&context, request);
+
+
+    // open file to be written
+    client_file.open(full_path);
+    printf("Fetching %s\n", full_path.c_str());
+
+    while(reader->Read(&chunk)){ // TODO close
+
+        //printf("Reading chunk\n");
+
+        const string &contents = chunk.data();
+        client_file << contents;
+    }
+    client_file.close();
+
+    Status status = reader->Finish();
+
+    if (!status.ok()) { // TODO close
+
+        if (status.error_code() == StatusCode::INTERNAL) {
+            return StatusCode::CANCELLED;
+        }
+
+    }
+
+    printf("Completed fetch\n");
+
+
+
+
+
 }
 
 StatusCode DFSClientNodeP1::Delete(const std::string& filename) {
@@ -106,6 +230,21 @@ StatusCode DFSClientNodeP1::Delete(const std::string& filename) {
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    fileName request;
+    request.set_file_name(filename);
+
+    ClientContext context;
+
+    // set timeout
+    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
+    context.set_deadline(deadline);
+
+    fileResponse response;
+
+    Status status = service_stub->DeleteFile(&context, request, &response);
+
+    printf("Requesting deletion of: %s\n", filename.c_str());
 
 }
 
@@ -134,6 +273,23 @@ StatusCode DFSClientNodeP1::Stat(const std::string &filename, void* file_status)
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    fileName request;
+    request.set_file_name(filename);
+
+    ClientContext context;
+
+    // set timeout
+    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
+    context.set_deadline(deadline);
+
+    fileStatusResponse response;
+
+    Status status = service_stub->FileStatus(&context, request, &response);
+
+    printf("Getting file status of: %s\n", filename.c_str());
+
+
 }
 
 StatusCode DFSClientNodeP1::List(std::map<std::string,int>* file_map, bool display) {
