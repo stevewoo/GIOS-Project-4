@@ -12,16 +12,16 @@ service DFSService {
     rpc StoreFile(stream fileSegment) returns (fileResponse);
 
     // 2. REQUIRED (Parts 1 & 2): A method to fetch files from the server
-    rpc FetchFile(fileName) returns (stream fileSegment);
+    rpc FetchFile(file) returns (stream fileSegment);
 
     // 3. REQUIRED (Parts 1 & 2): A method to delete files from the server
-    rpc DeleteFile(fileName) returns (fileResponse);
+    rpc DeleteFile(file) returns (fileResponse);
 
     // 4. REQUIRED (Parts 1 & 2): A method to list all files on the server
     rpc ListFiles(listFilesRequest) returns (files);
 
     // 5. REQUIRED (Parts 1 & 2): A method to get the status of a file on the server
-    rpc FileStatus(fileName) returns (fileStatusResponse);
+    rpc FileStatus(file) returns (fileStatusResponse);
 
     // 7. Any other methods you deem necessary to complete the tasks of this assignment
     // https://grpc.io/docs/languages/cpp/quickstart/
@@ -32,15 +32,14 @@ service DFSService {
 // Add your message types here
 
 
-message fileName{
+message file{
     string file_name = 1;
 }
 
 
 message fileSegment{
-    
     bytes data = 1;
-    string file_name = 2;
+    string file_name = 2; // for Store function
 }
 
 message fileResponse{

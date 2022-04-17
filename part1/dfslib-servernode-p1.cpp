@@ -120,11 +120,17 @@ public:
 
         while(reader->Read(&chunk)){ // TODO close
 
+            if (context->IsCancelled()) {
+                    return Status(StatusCode::CANCELLED, "Server abandoned Store: Deadline exceeded or client cancelled");
+            }
+
             //printf("Reading chunk\n");
 
             const string &contents = chunk.data();
+            printf("Writing %ld bytes to server file:%s\n", strlen(contents.c_str()), full_path.c_str());
             server_file << contents;
         }
+        printf("Closing %s\n", full_path.c_str());
         server_file.close();
 
         response->set_file_name(file_name);
@@ -137,7 +143,7 @@ public:
 
     }
 
-    Status FetchFile(ServerContext *context, const fileName* request, ServerWriter<fileSegment> *writer) override {
+    Status FetchFile(ServerContext *context, const file* request, ServerWriter<fileSegment> *writer) override {
 
         // get file path
         const string &full_path = WrapPath(request->file_name());
@@ -191,7 +197,7 @@ public:
 
     }
 
-    Status DeleteFile(ServerContext *context, const fileName* request, fileResponse *response) override {
+    Status DeleteFile(ServerContext *context, const file* request, fileResponse *response) override {
 
         // get file path
         const string &full_path = WrapPath(request->file_name());
@@ -214,7 +220,9 @@ public:
 
     }
 
-    Status FileStatus(ServerContext* context, const fileName* request, fileStatusResponse *response) override {
+    
+
+    Status FileStatus(ServerContext* context, const file* request, fileStatusResponse *response) override {
 
 
         // get file path
@@ -233,6 +241,30 @@ public:
         
         return Status::OK;
 
+
+    }
+
+
+    Status ListFiles(ServerContext* context, const listFilesRequest* request, files *response) override {
+
+        // https://stackoverflow.com/a/46105710
+        if (auto dir = opendir(mount_path.c_str())) {
+            while (auto file = readdir(dir)) {
+
+                //printf("dirent: %s\n", file->d_name);
+                if (file->d_name && file->d_name[0] != '.'&& file->d_type != DT_DIR ){
+                    //continue; // Skip everything that starts with a dot
+
+                    printf("File: %s\n", file->d_name);
+                    fileResponse *file_meta = response->add_file();
+                    file_meta->set_file_name(file->d_name);
+                }
+
+            }
+            closedir(dir);
+        }
+
+        return Status::OK;
 
     }
 

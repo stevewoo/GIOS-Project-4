@@ -125,6 +125,7 @@ StatusCode DFSClientNodeP1::Store(const std::string &filename) {
         total_bytes_sent += bytes_to_send;
 
     }
+    
     client_file.close();
     
     
@@ -174,14 +175,13 @@ StatusCode DFSClientNodeP1::Fetch(const std::string &filename) {
     system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
     context.set_deadline(deadline);
 
-    fileName request;
+    file request;
     request.set_file_name(filename);
     const string &full_path = WrapPath(filename);
 
     ofstream client_file;
     fileSegment chunk;
     unique_ptr<ClientReader<fileSegment>> reader = service_stub->FetchFile(&context, request);
-
 
     // open file to be written
     client_file.open(full_path);
@@ -205,12 +205,7 @@ StatusCode DFSClientNodeP1::Fetch(const std::string &filename) {
         }
 
     }
-
     printf("Completed fetch\n");
-
-
-
-
 
 }
 
@@ -231,7 +226,7 @@ StatusCode DFSClientNodeP1::Delete(const std::string& filename) {
     //
     //
 
-    fileName request;
+    file request;
     request.set_file_name(filename);
 
     ClientContext context;
@@ -274,7 +269,7 @@ StatusCode DFSClientNodeP1::Stat(const std::string &filename, void* file_status)
     //
     //
 
-    fileName request;
+    file request;
     request.set_file_name(filename);
 
     ClientContext context;
@@ -288,6 +283,12 @@ StatusCode DFSClientNodeP1::Stat(const std::string &filename, void* file_status)
     Status status = service_stub->FileStatus(&context, request, &response);
 
     printf("Getting file status of: %s\n", filename.c_str());
+
+    file_status = &response;
+
+    // int file_size = response.file_size();
+
+    // printf("File size of %s: %d\n", filename.c_str(), file_size);
 
 
 }
@@ -313,6 +314,39 @@ StatusCode DFSClientNodeP1::List(std::map<std::string,int>* file_map, bool displ
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    ClientContext context;
+
+    // set timeout
+    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
+    context.set_deadline(deadline);
+
+    files response;
+    listFilesRequest request;
+
+    Status status = service_stub->ListFiles(&context, request, &response);
+
+    //files list_of_files = response;
+
+    printf("Getting list of files:\n");
+
+    for(const fileResponse &file : response.file()){ // TODO close
+
+        printf("File: %s\n", file.file_name().c_str());
+    }
+
+    
+
+    
+
+
+
+
+
+
+
+
+
 }
 //
 // STUDENT INSTRUCTION:
