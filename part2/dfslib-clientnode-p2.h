@@ -141,6 +141,7 @@ public:
     //
     // You may add any additional declarations of methods or variables that you need here.
     //
+    system_clock::time_point get_deadline();
 
 
 };

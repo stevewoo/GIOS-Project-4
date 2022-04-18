@@ -34,6 +34,9 @@ using dfs_service::DFSService;
 
 using namespace dfs_service;
 
+using namespace google::protobuf;
+//using google::protobuf::util::TimeUtil;
+
 
 //
 // STUDENT INSTRUCTION:
@@ -118,18 +121,19 @@ public:
         server_file.open(full_path);
         printf("Storing %s\n", full_path.c_str());
 
-        while(reader->Read(&chunk)){ // TODO close
+        while(reader->Read(&chunk)){ 
 
             if (context->IsCancelled()) {
-                    return Status(StatusCode::CANCELLED, "Server abandoned Store: Deadline exceeded or client cancelled");
+                return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Store: Deadline exceeded or client cancelled");
             }
 
             //printf("Reading chunk\n");
 
             const string &contents = chunk.data();
-            printf("Writing %ld bytes to server file:%s\n", strlen(contents.c_str()), full_path.c_str());
+            //printf("Writing %ld bytes to server file:%s\n", strlen(contents.c_str()), full_path.c_str());
             server_file << contents;
         }
+        
         printf("Closing %s\n", full_path.c_str());
         server_file.close();
 
@@ -151,8 +155,7 @@ public:
         // check file exists
         struct stat file_status;   
 
-
-        if(stat (full_path.c_str(), &file_status) != 0){
+        if(stat(full_path.c_str(), &file_status) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
             return Status(StatusCode::NOT_FOUND, "File not found");
@@ -172,7 +175,7 @@ public:
             while(total_bytes_sent < file_size){
 
                 if (context->IsCancelled()) {
-                    return Status(StatusCode::CANCELLED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
+                    return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
                 }
 
                 char buffer[BUFFER_SIZE];
@@ -180,7 +183,7 @@ public:
                 int total_bytes_remaining = file_size - total_bytes_sent;
                 (total_bytes_remaining > BUFFER_SIZE) ? (bytes_to_send = BUFFER_SIZE) : (bytes_to_send = total_bytes_remaining);
 
-                server_file.read(buffer, bytes_to_send); // TODO close
+                server_file.read(buffer, bytes_to_send);
                 chunk.set_data(buffer, bytes_to_send);
                 writer->Write(chunk);
 
@@ -204,13 +207,13 @@ public:
 
         // check file exists
         struct stat buffer;   
-        if(stat (full_path.c_str(), &buffer) != 0){
+        if(stat(full_path.c_str(), &buffer) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
             return Status(StatusCode::NOT_FOUND, "File not found");
         }
         if (context->IsCancelled()) {
-            return Status(StatusCode::CANCELLED, "Server abandoned Delete: Deadline exceeded or client cancelled");
+            return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Delete: Deadline exceeded or client cancelled");
         }
 
         // delete it
@@ -236,7 +239,7 @@ public:
             return Status(StatusCode::NOT_FOUND, "File not found");
         }
         if (context->IsCancelled()) {
-            return Status(StatusCode::CANCELLED, "Server abandoned Status: Deadline exceeded or client cancelled");
+            return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Status: Deadline exceeded or client cancelled");
         }
         
         return Status::OK;
@@ -244,20 +247,35 @@ public:
 
     }
 
-
     Status ListFiles(ServerContext* context, const listFilesRequest* request, files *response) override {
 
         // https://stackoverflow.com/a/46105710
         if (auto dir = opendir(mount_path.c_str())) {
             while (auto file = readdir(dir)) {
 
+                if (context->IsCancelled()) {
+                    return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Delete: Deadline exceeded or client cancelled");
+                }
+
                 //printf("dirent: %s\n", file->d_name);
                 if (file->d_name && file->d_name[0] != '.'&& file->d_type != DT_DIR ){
-                    //continue; // Skip everything that starts with a dot
 
                     printf("File: %s\n", file->d_name);
+
+                    // add file to response
                     fileResponse *file_meta = response->add_file();
+
+                    // set file name
                     file_meta->set_file_name(file->d_name);
+
+                    // set modified time
+                    const string &full_path = WrapPath(file->d_name);
+
+                    struct stat file_status;
+                    stat(full_path.c_str(), &file_status); // TODO error check
+                    int64 modified_time = file_status.st_mtime;
+                    file_meta->set_modified(modified_time);
+                    
                 }
 
             }
@@ -265,14 +283,7 @@ public:
         }
 
         return Status::OK;
-
     }
-
-
-
-    
-
-
 };
 
 //

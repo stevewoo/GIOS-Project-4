@@ -31,6 +31,11 @@ using grpc::ClientWriter;
 using grpc::ClientReader;
 using grpc::ClientContext;
 
+using namespace std;
+using namespace dfs_service;
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
+
 
 extern dfs_log_level_e DFS_LOG_LEVEL;
 
@@ -41,8 +46,8 @@ extern dfs_log_level_e DFS_LOG_LEVEL;
 // message types you are using to indicate
 // a file request and a listing of files from the server.
 //
-using FileRequestType = FileRequest;
-using FileListResponseType = FileList;
+using FileRequestType = file; //FileRequest;
+using FileListResponseType = files; //FileList;
 
 DFSClientNodeP2::DFSClientNodeP2() : DFSClientNode() {}
 DFSClientNodeP2::~DFSClientNodeP2() {}
@@ -74,6 +79,83 @@ grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    ClientContext context;
+
+    
+
+    // set timeout
+    context.set_deadline(get_deadline());
+
+    //fileName request;
+    fileResponse response;
+    //request.set_file_name(filename);
+    const string &full_path = WrapPath(filename);
+
+    ifstream client_file;
+    fileSegment chunk;
+    unique_ptr<ClientWriter<fileSegment>> writer = service_stub->StoreFile(&context, &response);
+
+    // check file exists
+    struct stat file_status;   
+    if(stat (full_path.c_str(), &file_status) != 0){
+        // file not found
+        printf("File not found on client: %s\n", full_path.c_str());
+        return StatusCode::NOT_FOUND;
+    }
+
+    // send file name
+    chunk.set_file_name(filename);
+    writer->Write(chunk);
+
+    printf("Sent filename: %s\n", filename.c_str());
+
+    // get size
+    int file_size = file_status.st_size;
+
+    client_file.open(full_path);
+
+    // send in chunks
+    int total_bytes_sent = 0;
+    while(total_bytes_sent < file_size){
+
+        char buffer[BUFFER_SIZE];
+        int bytes_to_send;
+        int total_bytes_remaining = file_size - total_bytes_sent;
+
+        // fit chunk into buffer
+        (total_bytes_remaining > BUFFER_SIZE) ? (bytes_to_send = BUFFER_SIZE) : (bytes_to_send = total_bytes_remaining);
+
+        client_file.read(buffer, bytes_to_send);
+        chunk.set_data(buffer, bytes_to_send);
+        writer->Write(chunk);
+
+        total_bytes_sent += bytes_to_send;
+    }
+    
+    client_file.close();
+    
+    printf("Sent %s to server\n", full_path.c_str());
+
+    writer->WritesDone();
+    Status status = writer->Finish();
+
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        printf("Store - Deadline exceeded");
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    if(!status.ok()) {
+        printf("Store - not OK");
+        return StatusCode::CANCELLED;
+    }
+
+    printf("Completed Store\n");
+
+    //printf("status errorcode(): %d\n",  status.error_code());
+
+    return StatusCode::OK;
+
+
 
 }
 
@@ -146,6 +228,41 @@ grpc::StatusCode DFSClientNodeP2::Delete(const std::string &filename) {
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    file request;
+    request.set_file_name(filename); // file to be deleted
+
+    ClientContext context;
+
+    // set timeout
+    context.set_deadline(get_deadline());
+
+    writeLock lockResponse;
+    // request write lock
+    Status lockStatus = service_stub->RequestWriteLock(&context, request, &lockResponse);
+
+    // check file exists on server
+    if(lockStatus.error_code() == StatusCode::NOT_FOUND){
+        return StatusCode::NOT_FOUND;
+    }
+    // else if(lockStatus.error_code() == StatusCode::NOT_FOUND) // if lock request fails
+
+    fileResponse deleteResponse;
+    Status status = service_stub->DeleteFile(&context, request, &deleteResponse);
+
+    
+
+    printf("CLIENT %s - Requesting deletion of: %s\n", client_id, filename.c_str());
+
+
+
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    return StatusCode::OK;
 
 }
 
@@ -327,5 +444,10 @@ void DFSClientNodeP2::InitCallbackList() {
 //
 // Add any additional code you need to here
 //
+
+system_clock::time_point DFSClientNodeP2::get_deadline(){
+
+    return system_clock::now() + milliseconds(deadline_timeout);
+}
 
 

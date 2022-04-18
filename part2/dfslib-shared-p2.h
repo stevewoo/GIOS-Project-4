@@ -16,6 +16,8 @@
 #include "proto-src/dfs-service.grpc.pb.h"
 
 
+
+
 //
 // STUDENT INSTRUCTION
 //
@@ -25,6 +27,8 @@
 #define DFS_RESET_TIMEOUT 3000
 #define DFS_I_EVENT_SIZE (sizeof(struct inotify_event))
 #define DFS_I_BUFFER_SIZE (1024 * (DFS_I_EVENT_SIZE + 16))
+
+#define BUFFER_SIZE 4096 // added for file send / receive
 
 /** A file descriptor type **/
 typedef int FileDescriptor;

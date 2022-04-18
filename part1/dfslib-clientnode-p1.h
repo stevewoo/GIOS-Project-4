@@ -12,6 +12,9 @@
 #include "src/dfslibx-clientnode-p1.h"
 #include "proto-src/dfs-service.grpc.pb.h"
 
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
+
 class DFSClientNodeP1 : public DFSClientNode {
 
 public:
@@ -91,6 +94,8 @@ public:
         //
         // Add your additional declarations here
         //
+
+        system_clock::time_point get_deadline();
         
 
         

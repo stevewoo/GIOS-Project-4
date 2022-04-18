@@ -15,6 +15,8 @@
 #include <limits.h>
 #include <sys/inotify.h>
 #include <grpcpp/grpcpp.h>
+#include <ctime>
+#include <sys/time.h>
 
 using namespace std;
 
@@ -53,7 +55,6 @@ DFSClientNodeP1::~DFSClientNodeP1() noexcept {}
 
 
 
-
 StatusCode DFSClientNodeP1::Store(const std::string &filename) {
 
     //
@@ -78,8 +79,7 @@ StatusCode DFSClientNodeP1::Store(const std::string &filename) {
     ClientContext context;
 
     // set timeout
-    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
-    context.set_deadline(deadline);
+    context.set_deadline(get_deadline());
 
     //fileName request;
     fileResponse response;
@@ -94,7 +94,7 @@ StatusCode DFSClientNodeP1::Store(const std::string &filename) {
     struct stat file_status;   
     if(stat (full_path.c_str(), &file_status) != 0){
         // file not found
-        printf("File not found on client: %s\n",full_path.c_str());
+        printf("File not found on client: %s\n", full_path.c_str());
         return StatusCode::NOT_FOUND;
     }
 
@@ -104,45 +104,50 @@ StatusCode DFSClientNodeP1::Store(const std::string &filename) {
 
     printf("Sent filename: %s\n", filename.c_str());
 
-
     // get size
     int file_size = file_status.st_size;
 
     client_file.open(full_path);
 
+    // send in chunks
     int total_bytes_sent = 0;
     while(total_bytes_sent < file_size){
 
         char buffer[BUFFER_SIZE];
         int bytes_to_send;
         int total_bytes_remaining = file_size - total_bytes_sent;
+
+        // fit chunk into buffer
         (total_bytes_remaining > BUFFER_SIZE) ? (bytes_to_send = BUFFER_SIZE) : (bytes_to_send = total_bytes_remaining);
 
-        client_file.read(buffer, bytes_to_send); // TODO close
+        client_file.read(buffer, bytes_to_send);
         chunk.set_data(buffer, bytes_to_send);
         writer->Write(chunk);
 
         total_bytes_sent += bytes_to_send;
-
     }
     
     client_file.close();
     
-    
     printf("Sent %s to server\n", full_path.c_str());
 
+    writer->WritesDone();
     Status status = writer->Finish();
 
-    if (!status.ok()) { // TODO close
-
-        if (status.error_code() == StatusCode::INTERNAL) {
-            return StatusCode::CANCELLED;
-        }
-
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        printf("Store - Deadline exceeded");
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    if(!status.ok()) {
+        printf("Store - not OK");
+        return StatusCode::CANCELLED;
     }
 
     printf("Completed Store\n");
 
+    //printf("status errorcode(): %d\n",  status.error_code());
+
+    return StatusCode::OK;
 
 }
 
@@ -172,8 +177,7 @@ StatusCode DFSClientNodeP1::Fetch(const std::string &filename) {
     ClientContext context;
 
     // set timeout
-    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
-    context.set_deadline(deadline);
+    context.set_deadline(get_deadline());
 
     file request;
     request.set_file_name(filename);
@@ -187,7 +191,7 @@ StatusCode DFSClientNodeP1::Fetch(const std::string &filename) {
     client_file.open(full_path);
     printf("Fetching %s\n", full_path.c_str());
 
-    while(reader->Read(&chunk)){ // TODO close
+    while(reader->Read(&chunk)){
 
         //printf("Reading chunk\n");
 
@@ -198,14 +202,18 @@ StatusCode DFSClientNodeP1::Fetch(const std::string &filename) {
 
     Status status = reader->Finish();
 
-    if (!status.ok()) { // TODO close
-
-        if (status.error_code() == StatusCode::INTERNAL) {
-            return StatusCode::CANCELLED;
-        }
-
+    if(status.error_code() == StatusCode::NOT_FOUND){
+        return StatusCode::NOT_FOUND;
     }
+    else if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    
     printf("Completed fetch\n");
+    return StatusCode::OK;
 
 }
 
@@ -227,19 +235,30 @@ StatusCode DFSClientNodeP1::Delete(const std::string& filename) {
     //
 
     file request;
-    request.set_file_name(filename);
+    request.set_file_name(filename); // file to be deleted
 
     ClientContext context;
 
     // set timeout
-    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
-    context.set_deadline(deadline);
+    context.set_deadline(get_deadline());
 
     fileResponse response;
 
     Status status = service_stub->DeleteFile(&context, request, &response);
 
+    if(status.error_code() == StatusCode::NOT_FOUND){
+        return StatusCode::NOT_FOUND;
+    }
+
     printf("Requesting deletion of: %s\n", filename.c_str());
+
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    return StatusCode::OK;
 
 }
 
@@ -275,8 +294,7 @@ StatusCode DFSClientNodeP1::Stat(const std::string &filename, void* file_status)
     ClientContext context;
 
     // set timeout
-    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
-    context.set_deadline(deadline);
+    context.set_deadline(get_deadline());
 
     fileStatusResponse response;
 
@@ -287,9 +305,14 @@ StatusCode DFSClientNodeP1::Stat(const std::string &filename, void* file_status)
     file_status = &response;
 
     // int file_size = response.file_size();
-
     // printf("File size of %s: %d\n", filename.c_str(), file_size);
-
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    return StatusCode::OK;
 
 }
 
@@ -318,40 +341,57 @@ StatusCode DFSClientNodeP1::List(std::map<std::string,int>* file_map, bool displ
     ClientContext context;
 
     // set timeout
-    system_clock::time_point deadline = system_clock::now() + milliseconds(deadline_timeout);
-    context.set_deadline(deadline);
+    context.set_deadline(get_deadline());
 
     files response;
     listFilesRequest request;
 
     Status status = service_stub->ListFiles(&context, request, &response);
 
-    //files list_of_files = response;
 
     printf("Getting list of files:\n");
 
-    for(const fileResponse &file : response.file()){ // TODO close
+    for(const fileResponse &file : response.file()){
 
-        printf("File: %s\n", file.file_name().c_str());
+        if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+            return StatusCode::DEADLINE_EXCEEDED;
+        }
+
+        // https://stackoverflow.com/questions/13542345/how-to-convert-st-mtime-which-get-from-stat-function-to-string-or-char
+        time_t modified = (time_t)file.modified();
+        
+        if(display){
+            struct tm local_time;
+            localtime_r(&modified, &local_time);
+            char time_buffer[80];
+            strftime(time_buffer, sizeof(time_buffer), "%c", &local_time);
+            printf("File: %s\t Modified: %s\n", file.file_name().c_str(), time_buffer);
+        }
+
+        file_map->insert(pair<string,int>(file.file_name(), modified));
+
     }
 
-    
-
-    
-
-
-
-
-
-
-
-
-
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){ // for the case where there are no files
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    return status.error_code();
 }
+
+
 //
 // STUDENT INSTRUCTION:
 //
 // Add your additional code here, including
 // implementations of your client methods
 //
+
+
+system_clock::time_point DFSClientNodeP1::get_deadline(){
+
+    return system_clock::now() + milliseconds(deadline_timeout);
+}
 

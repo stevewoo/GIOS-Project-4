@@ -7,21 +7,28 @@ service DFSService {
     // Add your service calls here
 
     // 1. REQUIRED (Parts 1 & 2): A method to store files on the server
+    rpc StoreFile(stream fileSegment) returns (fileResponse);
 
     // 2. REQUIRED (Parts 1 & 2): A method to fetch files from the server
+    rpc FetchFile(file) returns (stream fileSegment);
 
     // 3. REQUIRED (Parts 1 & 2): A method to list all files on the server
+    rpc ListFiles(listFilesRequest) returns (files);
 
     // 4. REQUIRED (Parts 1 & 2): A method to get the status of a file on the server
+    rpc FileStatus(file) returns (fileStatusResponse);
 
     // 5. REQUIRED (Part 2 only): A method to request a write lock from the server
+    rpc RequestWriteLock(file) returns (writeLock);
 
     // 6. REQUIRED (Part 2 only): A method named CallbackList to handle asynchronous file listing requests
     //                            from a client. This method should return a listing of files along with their
     //                            attribute information. The expected attribute information should include name,
     //                            size, modified time, and creation time.
+    rpc CallbackList(file) returns (files);
 
     // 7. REQUIRED (Part 2 only): A method to delete a file from the server
+    rpc DeleteFile(file) returns (fileResponse);
 
     // 8. Any other methods you deem necessary to complete the tasks of this assignment
 
@@ -30,3 +37,39 @@ service DFSService {
 
 // Add your message types here
 
+message file{
+    string file_name = 1;
+    //string client_id = 2;
+}
+
+message fileSegment{
+    bytes data = 1;
+    string file_name = 2; // for Store function
+    string client_id = 3;
+}
+
+message fileResponse{
+    string file_name = 1;
+    int64 modified = 2;
+}
+
+message listFilesRequest{
+    // no args needed
+}
+
+message files{
+    repeated fileStatusResponse file = 1;
+}
+
+message fileStatusResponse{
+
+    // attribute info
+    string file_name = 1;
+    int64 file_size = 2;
+    int64 created = 3;
+    int64 modified = 4;
+}
+
+message writeLock{
+    // no args needed
+}
