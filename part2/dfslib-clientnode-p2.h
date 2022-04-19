@@ -13,6 +13,9 @@
 #include "src/dfslibx-clientnode-p2.h"
 #include "proto-src/dfs-service.grpc.pb.h"
 
+//using namespace std;
+using std::chrono::system_clock;
+
 class DFSClientNodeP2 : public DFSClientNode {
 
 public:
@@ -141,7 +144,10 @@ public:
     //
     // You may add any additional declarations of methods or variables that you need here.
     //
-    system_clock::time_point get_deadline();
+    std::chrono::system_clock::time_point get_deadline();
+
+    mutable std::mutex mount_mutex; // TODO public?
+    
 
 
 };

@@ -71,6 +71,7 @@ int main(int argc, char** argv) {
     signal(SIGTERM, HandleSignal);
 
     DFSServerNode server_node(server_address, dfs_clean_path(mount_path), num_async_threads, [&]{ return; });
+    dfs_log(LL_SYSINFO) << "Mounting on: " << mount_path;
     server_node.Start();
 
     return 0;

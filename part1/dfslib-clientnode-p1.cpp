@@ -18,7 +18,6 @@
 #include <ctime>
 #include <sys/time.h>
 
-using namespace std;
 
 #include "dfslib-shared-p1.h"
 #include "proto-src/dfs-service.grpc.pb.h"
@@ -31,6 +30,8 @@ using grpc::ClientWriter;
 using grpc::ClientReader;
 using grpc::ClientContext;
 
+
+using namespace std;
 using namespace dfs_service;
 using std::chrono::milliseconds;
 using std::chrono::system_clock;
@@ -348,7 +349,6 @@ StatusCode DFSClientNodeP1::List(std::map<std::string,int>* file_map, bool displ
 
     Status status = service_stub->ListFiles(&context, request, &response);
 
-
     printf("Getting list of files:\n");
 
     for(const fileResponse &file : response.file()){
@@ -381,14 +381,12 @@ StatusCode DFSClientNodeP1::List(std::map<std::string,int>* file_map, bool displ
     return status.error_code();
 }
 
-
 //
 // STUDENT INSTRUCTION:
 //
 // Add your additional code here, including
 // implementations of your client methods
 //
-
 
 system_clock::time_point DFSClientNodeP1::get_deadline(){
 

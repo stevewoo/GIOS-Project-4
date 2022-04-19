@@ -37,6 +37,7 @@ using std::chrono::milliseconds;
 using std::chrono::system_clock;
 
 
+
 extern dfs_log_level_e DFS_LOG_LEVEL;
 
 //
@@ -81,8 +82,6 @@ grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
     //
 
     ClientContext context;
-
-    
 
     // set timeout
     context.set_deadline(get_deadline());
@@ -155,8 +154,6 @@ grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
 
     return StatusCode::OK;
 
-
-
 }
 
 
@@ -179,6 +176,34 @@ grpc::StatusCode DFSClientNodeP2::RequestWriteAccess(const std::string &filename
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    ClientContext context;
+
+    // set timeout
+    context.set_deadline(get_deadline());
+
+    file request;
+    request.set_file_name(filename);
+
+    writeLock response;
+
+    Status status = service_stub->RequestWriteLock(&context, request, &response);
+
+    if(status.error_code() == StatusCode::RESOURCE_EXHAUSTED){
+        return StatusCode::RESOURCE_EXHAUSTED;
+    }
+    else if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+
+    dfs_log(LL_DEBUG) << "Locked file on server: " << request.file_name();
+    
+    
+    return StatusCode::OK;
+
 
 }
 
@@ -205,6 +230,47 @@ grpc::StatusCode DFSClientNodeP2::Fetch(const std::string &filename) {
     //
     // Hint: You may want to match the mtime on local files to the server's mtime
     //
+
+    ClientContext context;
+
+    // set timeout
+    context.set_deadline(get_deadline());
+
+    file request;
+    request.set_file_name(filename);
+    const string &full_path = WrapPath(filename);
+
+    ofstream client_file;
+    fileSegment chunk;
+    unique_ptr<ClientReader<fileSegment>> reader = service_stub->FetchFile(&context, request);
+
+    // open file to be written
+    client_file.open(full_path);
+    printf("Fetching %s\n", full_path.c_str());
+
+    while(reader->Read(&chunk)){
+
+        //printf("Reading chunk\n");
+
+        const string &contents = chunk.data();
+        client_file << contents;
+    }
+    client_file.close();
+
+    Status status = reader->Finish();
+
+    if(status.error_code() == StatusCode::NOT_FOUND){
+        return StatusCode::NOT_FOUND;
+    }
+    else if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    
+    printf("Completed fetch\n");
+    return StatusCode::OK;
 }
 
 grpc::StatusCode DFSClientNodeP2::Delete(const std::string &filename) {
@@ -242,19 +308,19 @@ grpc::StatusCode DFSClientNodeP2::Delete(const std::string &filename) {
     Status lockStatus = service_stub->RequestWriteLock(&context, request, &lockResponse);
 
     // check file exists on server
-    if(lockStatus.error_code() == StatusCode::NOT_FOUND){
-        return StatusCode::NOT_FOUND;
+    // if(lockStatus.error_code() == StatusCode::NOT_FOUND){
+    //     printf("CLIENT %s - File not found: %s\n", client_id, filename.c_str());
+    //     return StatusCode::NOT_FOUND;
+    // }
+    if(lockStatus.error_code() == StatusCode::RESOURCE_EXHAUSTED){
+        return StatusCode::RESOURCE_EXHAUSTED;
     }
-    // else if(lockStatus.error_code() == StatusCode::NOT_FOUND) // if lock request fails
 
+    // acquired lock - do delete
     fileResponse deleteResponse;
     Status status = service_stub->DeleteFile(&context, request, &deleteResponse);
 
-    
-
     printf("CLIENT %s - Requesting deletion of: %s\n", client_id, filename.c_str());
-
-
 
     if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
         return StatusCode::DEADLINE_EXCEEDED;
@@ -262,6 +328,7 @@ grpc::StatusCode DFSClientNodeP2::Delete(const std::string &filename) {
     else if(!status.ok()) {
         return StatusCode::CANCELLED;
     }
+
     return StatusCode::OK;
 
 }
@@ -284,6 +351,47 @@ grpc::StatusCode DFSClientNodeP2::List(std::map<std::string,int>* file_map, bool
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    ClientContext context;
+
+    // set timeout
+    context.set_deadline(get_deadline());
+
+    files response;
+    listFilesRequest request;
+
+    Status status = service_stub->ListFiles(&context, request, &response);
+
+    printf("Getting list of files:\n");
+
+    for(const fileStatus &file : response.file()){
+
+        if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+            return StatusCode::DEADLINE_EXCEEDED;
+        }
+
+        // https://stackoverflow.com/questions/13542345/how-to-convert-st-mtime-which-get-from-stat-function-to-string-or-char
+        time_t modified = (time_t)file.modified();
+        
+        if(display){
+            struct tm local_time;
+            localtime_r(&modified, &local_time);
+            char time_buffer[80];
+            strftime(time_buffer, sizeof(time_buffer), "%c", &local_time);
+            printf("File: %s\t Modified: %s\n", file.file_name().c_str(), time_buffer);
+        }
+
+        file_map->insert(pair<string,int>(file.file_name(), modified));
+
+    }
+
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){ // for the case where there are no files
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    return status.error_code();
 }
 
 grpc::StatusCode DFSClientNodeP2::Stat(const std::string &filename, void* file_status) {
@@ -305,6 +413,33 @@ grpc::StatusCode DFSClientNodeP2::Stat(const std::string &filename, void* file_s
     // StatusCode::CANCELLED otherwise
     //
     //
+
+    file request;
+    request.set_file_name(filename);
+
+    ClientContext context;
+
+    // set timeout
+    context.set_deadline(get_deadline());
+
+    fileStatus response;
+
+    Status status = service_stub->FileStatus(&context, request, &response);
+
+    printf("Getting file status of: %s\n", filename.c_str());
+
+    file_status = &response;
+
+    // int file_size = response.file_size();
+    // printf("File size of %s: %d\n", filename.c_str(), file_size);
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
+        return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(!status.ok()) {
+        return StatusCode::CANCELLED;
+    }
+    return StatusCode::OK;
+
 }
 
 void DFSClientNodeP2::InotifyWatcherCallback(std::function<void()> callback) {
@@ -328,8 +463,14 @@ void DFSClientNodeP2::InotifyWatcherCallback(std::function<void()> callback) {
     // the async thread when a file event has been signaled?
     //
 
+    dfs_log(LL_DEBUG) << "Inotify call";
+
+    
+    mount_mutex.lock();
 
     callback();
+
+    mount_mutex.unlock();
 
 }
 
@@ -377,7 +518,7 @@ void DFSClientNodeP2::HandleCallbackList() {
             // The tag is the memory location of the call_data object
             AsyncClientData<FileListResponseType> *call_data = static_cast<AsyncClientData<FileListResponseType> *>(tag);
 
-            dfs_log(LL_DEBUG2) << "Received completion queue callback";
+            dfs_log(LL_DEBUG) << "Received completion queue callback";
 
             // Verify that the request was completed successfully. Note that "ok"
             // corresponds solely to the request for updates introduced by Finish().
@@ -388,7 +529,8 @@ void DFSClientNodeP2::HandleCallbackList() {
 
             if (ok && call_data->status.ok()) {
 
-                dfs_log(LL_DEBUG3) << "Handling async callback ";
+                dfs_log(LL_DEBUG) << "Handling async callback ";
+                
 
                 //
                 // STUDENT INSTRUCTION:
@@ -400,8 +542,75 @@ void DFSClientNodeP2::HandleCallbackList() {
                 // Send an update to the server?
                 // Do nothing?
                 //
+                dfs_log(LL_DEBUG) << "Unlocking...";
+                mount_mutex.lock();
 
+                //dfs_log(LL_DEBUG) << "Handling async callback ";
 
+                // go through each file on server - update client mount appropriately
+                for(const fileStatus &serverFileStatus : call_data->reply.file()){
+
+                    // get local file
+                    const std::string &full_path = WrapPath(serverFileStatus.file_name());
+                    fileStatus clientFileStatus;
+
+                    StatusCode statusCode;
+
+                    struct stat buffer;   
+                    if(stat(full_path.c_str(), &buffer) == 0) { // file exists on client
+
+                        dfs_log(LL_DEBUG) << "Found " << serverFileStatus.file_name() << " on client";
+
+                        clientFileStatus.set_allocated_file_name(new string(full_path));
+                        clientFileStatus.set_created(buffer.st_ctime);
+                        clientFileStatus.set_modified(buffer.st_mtime); // TODO check these
+                        clientFileStatus.set_file_size(buffer.st_size);
+
+                        // compare modified times
+                        if(serverFileStatus.modified() < clientFileStatus.modified()){ // server version more recent - fetch
+                            
+                            // TODO what if same file, just updated modified time?
+
+                            dfs_log(LL_DEBUG) << "Newer file found on server - fetching: " << serverFileStatus.file_name();
+                            statusCode = this->Fetch(serverFileStatus.file_name());
+                            if(statusCode != StatusCode::OK){
+                                dfs_log(LL_ERROR) << "Error fetching: " << serverFileStatus.file_name();
+                            }
+                            dfs_log(LL_DEBUG) << "Fetch done: " << serverFileStatus.file_name();
+
+                            // update modified time to match server
+                            struct utimbuf modified_time;
+                            modified_time.modtime = clientFileStatus.modified();
+                            utime(full_path.c_str(), &modified_time);
+
+                        } else if(serverFileStatus.modified() > clientFileStatus.modified()){ // client version most recent - store
+
+                            // 
+                            dfs_log(LL_DEBUG) << "Newer file found on client - storing: " << serverFileStatus.file_name();
+                            statusCode = this->Store(serverFileStatus.file_name());
+                            if(statusCode != StatusCode::OK){
+                                dfs_log(LL_ERROR) << "Error storing: " << serverFileStatus.file_name();
+                            }
+                            dfs_log(LL_DEBUG) << "Store done: " << serverFileStatus.file_name();
+
+                        }
+
+                    }
+                    else{ // file does not exist - fetch it
+
+                        dfs_log(LL_DEBUG) << "File does not exist - fetching: " << serverFileStatus.file_name();
+                        statusCode = this->Fetch(serverFileStatus.file_name());
+                        if(statusCode != StatusCode::OK){
+                            dfs_log(LL_ERROR) << "Error fetching: " << serverFileStatus.file_name();
+                        }
+                        dfs_log(LL_DEBUG) << "Fetch done: " << serverFileStatus.file_name();
+
+                    }
+                }
+
+                dfs_log(LL_DEBUG) << "Unlocking...";
+                mount_mutex.unlock();
+                dfs_log(LL_DEBUG) << "Unlocked.";
 
             } else {
                 dfs_log(LL_ERROR) << "Status was not ok. Will try again in " << DFS_RESET_TIMEOUT << " milliseconds.";
@@ -412,6 +621,8 @@ void DFSClientNodeP2::HandleCallbackList() {
             // Once we're complete, deallocate the call_data object.
             delete call_data;
 
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // TODO remove - used for easier debugging
+
             //
             // STUDENT INSTRUCTION:
             //
@@ -419,9 +630,8 @@ void DFSClientNodeP2::HandleCallbackList() {
 
         }
 
-
         // Start the process over and wait for the next callback response
-        dfs_log(LL_DEBUG3) << "Calling InitCallbackList";
+        dfs_log(LL_DEBUG) << "Calling InitCallbackList";
         InitCallbackList();
 
     }
@@ -444,10 +654,10 @@ void DFSClientNodeP2::InitCallbackList() {
 //
 // Add any additional code you need to here
 //
-
-system_clock::time_point DFSClientNodeP2::get_deadline(){
+std::chrono::system_clock::time_point DFSClientNodeP2::get_deadline(){
 
     return system_clock::now() + milliseconds(deadline_timeout);
 }
+
 
 
