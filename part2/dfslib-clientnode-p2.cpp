@@ -91,11 +91,7 @@ grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
     //request.set_file_name(filename);
     const string &full_path = WrapPath(filename);
 
-    ifstream client_file;
-    fileSegment chunk;
-    unique_ptr<ClientWriter<fileSegment>> writer = service_stub->StoreFile(&context, &response);
-
-    // check file exists
+    // check file exists on client TODO: not necessary according to above
     struct stat file_status;   
     if(stat (full_path.c_str(), &file_status) != 0){
         // file not found
@@ -103,8 +99,27 @@ grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
         return StatusCode::NOT_FOUND;
     }
 
-    // send file name
+    // get server write lock
+    StatusCode writeLockCode = this->RequestWriteAccess(full_path);
+    if(writeLockCode != StatusCode::OK){
+        return StatusCode::RESOURCE_EXHAUSTED;
+    }
+
+    ifstream client_file;
+    fileSegment chunk;
+    unique_ptr<ClientWriter<fileSegment>> writer = service_stub->StoreFile(&context, &response);
+
+
+    // send file name and mod time
     chunk.set_file_name(filename);
+    chunk.set_modified(file_status.st_mtime);
+
+    // get checksum
+    uint32_t client_checksum = dfs_file_checksum(full_path, &(this->crc_table));
+    if(client_checksum == 0){
+        dfs_log(LL_ERROR) << "0 CHECKSUM in Store";
+    }
+    chunk.set_check_sum(client_checksum);
     writer->Write(chunk);
 
     printf("Sent filename: %s\n", filename.c_str());
@@ -142,6 +157,9 @@ grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
     if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
         printf("Store - Deadline exceeded");
         return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(status.error_code() == StatusCode::ALREADY_EXISTS){ // TODO needs to be checked before file transfer?
+        return StatusCode::ALREADY_EXISTS;
     }
     if(!status.ok()) {
         printf("Store - not OK");
@@ -184,6 +202,9 @@ grpc::StatusCode DFSClientNodeP2::RequestWriteAccess(const std::string &filename
 
     file request;
     request.set_file_name(filename);
+
+    dfs_log(LL_DEBUG) << "Sending client_id: " << ClientId();
+    request.set_client_id(ClientId());
 
     writeLock response;
 
@@ -238,11 +259,35 @@ grpc::StatusCode DFSClientNodeP2::Fetch(const std::string &filename) {
 
     file request;
     request.set_file_name(filename);
+    
+
     const string &full_path = WrapPath(filename);
+
+    // get checksum
+    uint32_t client_checksum = dfs_file_checksum(full_path, &(this->crc_table));
+    if(client_checksum == 0){
+        dfs_log(LL_ERROR) << "0 CHECKSUM in Fetch";
+    }
+    request.set_check_sum(client_checksum);
 
     ofstream client_file;
     fileSegment chunk;
     unique_ptr<ClientReader<fileSegment>> reader = service_stub->FetchFile(&context, request);
+
+    // fileHeader headerRequest;
+    // headerRequest.set_file_name(filename);
+    // fileHeader headerResponse;
+    // Status status  = service_stub->SendHeader(&context, headerRequest, &headerResponse);
+
+    // check file exists on client
+    // struct stat file_status;   
+    // if(stat(full_path.c_str(), &file_status) == 0){ // file already on client
+        
+
+    //     // update modified time
+        
+    // }
+    
 
     // open file to be written
     client_file.open(full_path);
@@ -264,6 +309,9 @@ grpc::StatusCode DFSClientNodeP2::Fetch(const std::string &filename) {
     }
     else if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
         return StatusCode::DEADLINE_EXCEEDED;
+    }
+    else if(status.error_code() == StatusCode::ALREADY_EXISTS){ // TODO needs to be checked before file transfer?
+        return StatusCode::ALREADY_EXISTS;
     }
     else if(!status.ok()) {
         return StatusCode::CANCELLED;
@@ -295,32 +343,39 @@ grpc::StatusCode DFSClientNodeP2::Delete(const std::string &filename) {
     //
     //
 
-    file request;
-    request.set_file_name(filename); // file to be deleted
+    
+
+    
+
+    // request write lock
+    StatusCode lockStatusCode = this->RequestWriteAccess(filename);
+    if (lockStatusCode != StatusCode::OK) {
+        return StatusCode::RESOURCE_EXHAUSTED;
+    }
+    // if(lockStatus.error_code() == StatusCode::RESOURCE_EXHAUSTED){
+    //     return StatusCode::RESOURCE_EXHAUSTED;
+    // }
 
     ClientContext context;
 
     // set timeout
     context.set_deadline(get_deadline());
 
-    writeLock lockResponse;
-    // request write lock
-    Status lockStatus = service_stub->RequestWriteLock(&context, request, &lockResponse);
+    file request;
+    request.set_file_name(filename); // file to be deleted
 
     // check file exists on server
     // if(lockStatus.error_code() == StatusCode::NOT_FOUND){
     //     printf("CLIENT %s - File not found: %s\n", client_id, filename.c_str());
     //     return StatusCode::NOT_FOUND;
     // }
-    if(lockStatus.error_code() == StatusCode::RESOURCE_EXHAUSTED){
-        return StatusCode::RESOURCE_EXHAUSTED;
-    }
+    
+    dfs_log(LL_DEBUG) << "DELETE acquired lock";
 
     // acquired lock - do delete
     fileResponse deleteResponse;
-    Status status = service_stub->DeleteFile(&context, request, &deleteResponse);
-
     printf("CLIENT %s - Requesting deletion of: %s\n", client_id, filename.c_str());
+    Status status = service_stub->DeleteFile(&context, request, &deleteResponse);
 
     if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
         return StatusCode::DEADLINE_EXCEEDED;
@@ -465,13 +520,14 @@ void DFSClientNodeP2::InotifyWatcherCallback(std::function<void()> callback) {
 
     dfs_log(LL_DEBUG) << "Inotify call";
 
-    
     mount_mutex.lock();
+    dfs_log(LL_DEBUG) << "Locked to do callback.";
 
     callback();
 
+    dfs_log(LL_DEBUG) << "Unlocking after callback";
     mount_mutex.unlock();
-
+    dfs_log(LL_DEBUG) << "Unlocked.";
 }
 
 //
@@ -542,10 +598,12 @@ void DFSClientNodeP2::HandleCallbackList() {
                 // Send an update to the server?
                 // Do nothing?
                 //
-                dfs_log(LL_DEBUG) << "Unlocking...";
+                dfs_log(LL_DEBUG) << "Locking...";
                 mount_mutex.lock();
 
                 //dfs_log(LL_DEBUG) << "Handling async callback ";
+
+                //this->List()
 
                 // go through each file on server - update client mount appropriately
                 for(const fileStatus &serverFileStatus : call_data->reply.file()){
@@ -561,10 +619,16 @@ void DFSClientNodeP2::HandleCallbackList() {
 
                         dfs_log(LL_DEBUG) << "Found " << serverFileStatus.file_name() << " on client";
 
-                        clientFileStatus.set_allocated_file_name(new string(full_path));
+                        clientFileStatus.set_allocated_file_name(new string(full_path)); // populate file_status
                         clientFileStatus.set_created(buffer.st_ctime);
                         clientFileStatus.set_modified(buffer.st_mtime); // TODO check these
                         clientFileStatus.set_file_size(buffer.st_size);
+
+                        dfs_log(LL_DEBUG) << "Client modified:" << clientFileStatus.modified();
+                        //human_time(clientFileStatus.file_name().c_str(), clientFileStatus.modified());
+                        
+                        dfs_log(LL_DEBUG) << "Server modified:" << serverFileStatus.modified();
+                        //human_time(serverFileStatus.file_name().c_str(), serverFileStatus.modified());
 
                         // compare modified times
                         if(serverFileStatus.modified() < clientFileStatus.modified()){ // server version more recent - fetch
@@ -658,6 +722,8 @@ std::chrono::system_clock::time_point DFSClientNodeP2::get_deadline(){
 
     return system_clock::now() + milliseconds(deadline_timeout);
 }
+
+
 
 
 

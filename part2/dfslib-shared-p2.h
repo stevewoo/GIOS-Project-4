@@ -62,6 +62,8 @@ struct EventStruct {
 // Add any additional shared code here
 //
 
+void human_time(std::string file_name, time_t modified);
+
 
 
 

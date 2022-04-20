@@ -105,7 +105,31 @@ private:
     CRC::Table<std::uint32_t, 32> crc_table;
 
     // lock server mount when being accessed // TODO update with file / client access granularity
-    mutex mount_mutex;
+    shared_timed_mutex mount_mutex;
+
+
+    bool check_sum_the_same(uint32_t client_file_check_sum, string path){
+
+        dfs_log(LL_DEBUG) << "Getting checksum for: " << path;
+
+
+        uint32_t server_file_check_sum = dfs_file_checksum(path, &crc_table);
+
+        dfs_log(LL_DEBUG) << "Client checksum:" << client_file_check_sum;
+        dfs_log(LL_DEBUG) << "Server checksum:" << server_file_check_sum;
+
+
+        if(server_file_check_sum == client_file_check_sum){
+            dfs_log(LL_DEBUG) << "Equal checksums";
+            return true;
+        }
+        dfs_log(LL_DEBUG) << "Checksums not the same";
+        return false;
+    
+        
+
+
+    }
 
 
 public:
@@ -251,7 +275,10 @@ public:
 
     Status RequestWriteLock(ServerContext *context, const file *request, writeLock *response) override {
 
-        dfs_log(LL_DEBUG) << "Requesting WriteLock for file: " << request->file_name();
+        const string client_id = request->client_id();
+
+        dfs_log(LL_DEBUG) << client_id << " requesting WriteLock for file: " << request->file_name(); 
+    
 
         // TODO - lock for individual files
         if(mount_mutex.try_lock()){
@@ -275,9 +302,38 @@ public:
         fileSegment chunk;
         reader->Read(&chunk);
         const string &file_name = chunk.file_name();
+        int client_modified_time = chunk.modified();
         printf("Received: %s\n", file_name.c_str());
 
+        // extract checksum
+        uint32 client_checksum = chunk.check_sum();
+        if(client_checksum == 0){
+            dfs_log(LL_ERROR) << "0 CHECKSUM in StoreFile";
+        }
+
         const string &full_path = WrapPath(file_name);
+
+        // check if file already exists on server
+        struct stat file_status;   
+        if(stat(full_path.c_str(), &file_status) == 0){ // file exists
+
+            // compare checksums, if same no need to store - just update mod time of server copy
+            if(check_sum_the_same(client_checksum, full_path.c_str())){ // same contents
+
+                // update modified time to match client
+                dfs_log(LL_DEBUG) << "Same file: updating modified time";
+                struct utimbuf modified_time;
+                modified_time.modtime = client_modified_time;
+                utime(full_path.c_str(), &modified_time);
+                
+                dfs_log(LL_DEBUG) << "Unlock in Store";
+                mount_mutex.unlock();
+                //dfs_log(LL_DEBUG) << "CHECKSUM SAME IN STORE";
+                return Status(StatusCode::ALREADY_EXISTS, "same file contents");
+
+            }
+        }
+
 
         ofstream server_file;
 
@@ -288,6 +344,8 @@ public:
         while(reader->Read(&chunk)){ 
 
             if (context->IsCancelled()) {
+                dfs_log(LL_DEBUG) << "Unlock after cancelled Store";
+                mount_mutex.unlock();
                 return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Store: Deadline exceeded or client cancelled");
             }
 
@@ -301,11 +359,19 @@ public:
         printf("Closing %s\n", full_path.c_str());
         server_file.close();
 
+        // update modified time to match client
+        struct utimbuf modified_time;
+        modified_time.modtime = client_modified_time;
+        utime(full_path.c_str(), &modified_time);
+
+        dfs_log(LL_DEBUG) << "Unlock after Store";
+        mount_mutex.unlock();
+
         response->set_file_name(file_name);
 
         //Status status = reader->Finish();
 
-        mount_mutex.unlock();
+        
 
         printf("Completed Store\n");
 
@@ -320,13 +386,31 @@ public:
         // get file path
         const string &full_path = WrapPath(request->file_name());
 
-        // check file exists
+        // extract checksum
+        uint32 client_checksum = request->check_sum();
+        if(client_checksum == 0){
+            dfs_log(LL_ERROR) << "0 CHECKSUM in Fetch";
+        }
+
+        // check file exists on server
         struct stat file_status;   
 
         if(stat(full_path.c_str(), &file_status) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
             return Status(StatusCode::NOT_FOUND, "File not found");
+        }
+        else if(check_sum_the_same(client_checksum, full_path.c_str())){ // same contents
+            
+            // fileSegment chunk;
+            // chunk.set_modified(file_status.st_mtime);
+            // writer->WriteLast(chunk);
+
+            // TODO: send updated mod time here?
+            dfs_log(LL_DEBUG) << "CHECKSUM SAME IN FETCH";
+            
+            return Status(StatusCode::ALREADY_EXISTS, "same file contents");
+
         }
         else{ // send it
 
@@ -337,12 +421,19 @@ public:
 
             // input file stream
             ifstream server_file;
+
+            mount_mutex.lock_shared();
+            dfs_log(LL_DEBUG) << "Shared lock in Fetch";
+
             server_file.open(full_path);
 
             int total_bytes_sent = 0;
             while(total_bytes_sent < file_size){
 
                 if (context->IsCancelled()) {
+
+                    dfs_log(LL_DEBUG) << "Unlock shared after cancelled Fetch";
+                    mount_mutex.unlock_shared();
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
                 }
 
@@ -359,7 +450,8 @@ public:
 
             }
             server_file.close();
-            
+            dfs_log(LL_DEBUG) << "Unlock shared after Fetch";
+            mount_mutex.unlock_shared();
             
             printf("Sent %s to client\n", full_path.c_str());
 
@@ -380,17 +472,23 @@ public:
         if(stat(full_path.c_str(), &buffer) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
+            dfs_log(LL_DEBUG) << "Unlock in Delete - file not found";
+            mount_mutex.unlock();
             return Status(StatusCode::NOT_FOUND, "File not found");
         }
         if (context->IsCancelled()) {
+            dfs_log(LL_DEBUG) << "Unlock in cancelled Delete";
+            mount_mutex.unlock();
             return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Delete: Deadline exceeded or client cancelled");
         }
 
         // delete it
         remove(full_path.c_str()); // TODO error check
-        printf("removed %s\n",full_path.c_str());
 
+        dfs_log(LL_DEBUG) << "Unlock after Delete";
         mount_mutex.unlock();
+
+        printf("removed %s\n",full_path.c_str());
 
         return Status::OK;
 
@@ -417,16 +515,16 @@ public:
         }
         
         return Status::OK;
-
-
     }
 
     Status ListFiles(ServerContext* context, const listFilesRequest* request, files *response) override {
 
         dfs_log(LL_DEBUG) << "Calling ListFiles";
 
-        mount_mutex.lock();
-        //dfs_log(LL_DEBUG) << "Mutex locked";
+        dfs_log(LL_DEBUG) << "Shared lock in List";
+
+        mount_mutex.lock_shared();
+        dfs_log(LL_DEBUG) << "Shared locked in List";
 
 
         // https://stackoverflow.com/a/46105710
@@ -442,8 +540,9 @@ public:
                 context->AsyncNotifyWhenDone(NULL);
 
                 if (context->IsCancelled()) {
-
-                    mount_mutex.unlock();
+                    
+                    dfs_log(LL_DEBUG) << "Unlock shared in List";
+                    mount_mutex.unlock_shared();
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Delete: Deadline exceeded or client cancelled");
                     
                 }
@@ -471,8 +570,10 @@ public:
 
             }
             closedir(dir);
-            mount_mutex.unlock();
+            
         }
+        dfs_log(LL_DEBUG) << "Unlock shared after List";
+        mount_mutex.unlock_shared();
 
         return Status::OK;
     }

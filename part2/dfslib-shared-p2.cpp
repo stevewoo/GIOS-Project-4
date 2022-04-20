@@ -25,4 +25,14 @@ dfs_log_level_e DFS_LOG_LEVEL = LL_ERROR;
 // Just be aware they are always submitted, so they should
 // be compilable.
 //
+void human_time(std::string file_name, time_t modified){
 
+    struct tm local_time;
+    localtime_r(&modified, &local_time);
+    char time_buffer[80];
+    strftime(time_buffer, sizeof(time_buffer), "%c", &local_time);
+    //printf("File: %s\t Modified: %s\n", file.file_name().c_str(), time_buffer);
+
+    printf("File: %s\t Modified: %s\n", file_name.c_str(), time_buffer);
+
+}
