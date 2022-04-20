@@ -102,6 +102,7 @@ grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
     // get server write lock
     StatusCode writeLockCode = this->RequestWriteAccess(full_path);
     if(writeLockCode != StatusCode::OK){
+        dfs_log(LL_DEBUG) << "Store: Can't get server dir lock";
         return StatusCode::RESOURCE_EXHAUSTED;
     }
 
@@ -350,6 +351,7 @@ grpc::StatusCode DFSClientNodeP2::Delete(const std::string &filename) {
     // request write lock
     StatusCode lockStatusCode = this->RequestWriteAccess(filename);
     if (lockStatusCode != StatusCode::OK) {
+        dfs_log(LL_DEBUG) << "Delete: Can't get server dir lock";
         return StatusCode::RESOURCE_EXHAUSTED;
     }
     // if(lockStatus.error_code() == StatusCode::RESOURCE_EXHAUSTED){
@@ -617,25 +619,28 @@ void DFSClientNodeP2::HandleCallbackList() {
                     struct stat buffer;   
                     if(stat(full_path.c_str(), &buffer) == 0) { // file exists on client
 
-                        dfs_log(LL_DEBUG) << "Found " << serverFileStatus.file_name() << " on client";
+                        //dfs_log(LL_DEBUG) << "Found " << serverFileStatus.file_name() << " on client";
 
                         clientFileStatus.set_allocated_file_name(new string(full_path)); // populate file_status
                         clientFileStatus.set_created(buffer.st_ctime);
                         clientFileStatus.set_modified(buffer.st_mtime); // TODO check these
                         clientFileStatus.set_file_size(buffer.st_size);
 
-                        dfs_log(LL_DEBUG) << "Client modified:" << clientFileStatus.modified();
+                        // dfs_log(LL_DEBUG) << "Client modified:" << clientFileStatus.modified();
                         //human_time(clientFileStatus.file_name().c_str(), clientFileStatus.modified());
                         
-                        dfs_log(LL_DEBUG) << "Server modified:" << serverFileStatus.modified();
+                        // dfs_log(LL_DEBUG) << "Server modified:" << serverFileStatus.modified();
                         //human_time(serverFileStatus.file_name().c_str(), serverFileStatus.modified());
 
                         // compare modified times
-                        if(serverFileStatus.modified() < clientFileStatus.modified()){ // server version more recent - fetch
+                        if(serverFileStatus.modified() > clientFileStatus.modified()){ // server version more recent - fetch
                             
                             // TODO what if same file, just updated modified time?
 
-                            dfs_log(LL_DEBUG) << "Newer file found on server - fetching: " << serverFileStatus.file_name();
+                            dfs_log(LL_DEBUG) << clientFileStatus.file_name() << "on client modified:" << clientFileStatus.modified();
+                            dfs_log(LL_DEBUG) << serverFileStatus.file_name() << "on server modified:" << serverFileStatus.modified();
+
+                            dfs_log(LL_DEBUG) << "Newer file found on server  - fetching: " << serverFileStatus.file_name();
                             statusCode = this->Fetch(serverFileStatus.file_name());
                             if(statusCode != StatusCode::OK){
                                 dfs_log(LL_ERROR) << "Error fetching: " << serverFileStatus.file_name();
@@ -647,16 +652,18 @@ void DFSClientNodeP2::HandleCallbackList() {
                             modified_time.modtime = clientFileStatus.modified();
                             utime(full_path.c_str(), &modified_time);
 
-                        } else if(serverFileStatus.modified() > clientFileStatus.modified()){ // client version most recent - store
+                        } else if(serverFileStatus.modified() < clientFileStatus.modified()){ // client version most recent - store
 
                             // 
+                            dfs_log(LL_DEBUG) << clientFileStatus.file_name() << "on client modified:" << clientFileStatus.modified();
+                            dfs_log(LL_DEBUG) << serverFileStatus.file_name() << "on server modified:" << serverFileStatus.modified();
+
                             dfs_log(LL_DEBUG) << "Newer file found on client - storing: " << serverFileStatus.file_name();
                             statusCode = this->Store(serverFileStatus.file_name());
                             if(statusCode != StatusCode::OK){
                                 dfs_log(LL_ERROR) << "Error storing: " << serverFileStatus.file_name();
                             }
                             dfs_log(LL_DEBUG) << "Store done: " << serverFileStatus.file_name();
-
                         }
 
                     }

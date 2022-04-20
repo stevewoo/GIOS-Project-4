@@ -105,7 +105,7 @@ private:
     CRC::Table<std::uint32_t, 32> crc_table;
 
     // lock server mount when being accessed // TODO update with file / client access granularity
-    shared_timed_mutex mount_mutex;
+    mutex mount_mutex;
 
 
     bool check_sum_the_same(uint32_t client_file_check_sum, string path){
@@ -422,7 +422,7 @@ public:
             // input file stream
             ifstream server_file;
 
-            mount_mutex.lock_shared();
+            mount_mutex.lock();
             dfs_log(LL_DEBUG) << "Shared lock in Fetch";
 
             server_file.open(full_path);
@@ -433,7 +433,7 @@ public:
                 if (context->IsCancelled()) {
 
                     dfs_log(LL_DEBUG) << "Unlock shared after cancelled Fetch";
-                    mount_mutex.unlock_shared();
+                    mount_mutex.unlock();
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
                 }
 
@@ -451,7 +451,7 @@ public:
             }
             server_file.close();
             dfs_log(LL_DEBUG) << "Unlock shared after Fetch";
-            mount_mutex.unlock_shared();
+            mount_mutex.unlock();
             
             printf("Sent %s to client\n", full_path.c_str());
 
@@ -523,7 +523,7 @@ public:
 
         dfs_log(LL_DEBUG) << "Shared lock in List";
 
-        mount_mutex.lock_shared();
+        mount_mutex.lock();
         dfs_log(LL_DEBUG) << "Shared locked in List";
 
 
@@ -542,7 +542,7 @@ public:
                 if (context->IsCancelled()) {
                     
                     dfs_log(LL_DEBUG) << "Unlock shared in List";
-                    mount_mutex.unlock_shared();
+                    mount_mutex.unlock();
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Delete: Deadline exceeded or client cancelled");
                     
                 }
@@ -573,7 +573,7 @@ public:
             
         }
         dfs_log(LL_DEBUG) << "Unlock shared after List";
-        mount_mutex.unlock_shared();
+        mount_mutex.unlock();
 
         return Status::OK;
     }
