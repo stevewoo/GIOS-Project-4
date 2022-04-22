@@ -90,6 +90,8 @@ private:
     /** The vector of queued tags used to manage asynchronous requests **/
     std::vector<QueueRequest<FileRequestType, FileListResponseType>> queued_tags;
 
+    
+
 
     /**
      * Prepend the mount path to the filename.
@@ -105,30 +107,96 @@ private:
     CRC::Table<std::uint32_t, 32> crc_table;
 
     // lock server mount when being accessed // TODO update with file / client access granularity
-    mutex mount_mutex;
+    //mutex mount_mutex;
+
+    //std::shared_timed_mutex read_mutex;
+
+    std::mutex file_map_mutex;
+    map<string, string> file_client_map;
+
+    bool get_write_lock(std::string file_name, std::string client_id){
+
+        const std::lock_guard<std::mutex> lock(file_map_mutex);
+
+        // check if file in map
+        if (file_client_map.find(file_name) == file_client_map.end()) {
+            // file not in map - insert client_id for this file
+
+            dfs_log(LL_DEBUG) << file_name << " locked by " << client_id;
+            file_client_map[file_name] = client_id;
+
+            return true;
+
+        } else { // file in map - check client_id, if same client_id return true
+        
+            std::string client_id_with_lock = file_client_map.at(file_name);
+
+            dfs_log(LL_DEBUG) << client_id << " requesting lock for " << file_name;
+            print_write_locks();
 
 
-    bool check_sum_the_same(uint32_t client_file_check_sum, string path){
+            if(client_id == client_id_with_lock){
+                return true;
+            }
+
+        }  
+        return false;
+
+    }
+
+    bool is_locked(std::string file_name){
+
+        const std::lock_guard<std::mutex> lock(file_map_mutex);
+
+        // check if file in map
+        if (file_client_map.find(file_name) != file_client_map.end() ) {
+            dfs_log(LL_DEBUG) << file_name << " is currently locked for writing";
+            return true;
+        }
+        return false;
+
+    }
+
+    void print_write_locks(){
+        // print map contents
+        map<string, string>::iterator itr;
+        dfs_log(LL_DEBUG) << "KEY\tELEMENT";
+        for (itr = file_client_map.begin(); itr != file_client_map.end(); ++itr) {
+            dfs_log(LL_DEBUG) << itr->first << '\t' << itr->second << '\n';
+        }
+    }
+
+    void release_file_lock(std::string file_name){
+
+        const std::lock_guard<std::mutex> lock(file_map_mutex);
+
+        // remove file (and client_id from map)
+        file_client_map.erase(file_name);
+        dfs_log(LL_DEBUG) << file_name << " lock released";
+
+    }
+
+
+
+    // compare client checksum with server checksum
+    bool check_sum_the_same(uint32_t client_file_checksum, string path){
 
         dfs_log(LL_DEBUG) << "Getting checksum for: " << path;
 
 
-        uint32_t server_file_check_sum = dfs_file_checksum(path, &crc_table);
+        uint32_t server_file_checksum = dfs_file_checksum(path, &crc_table);
 
-        dfs_log(LL_DEBUG) << "Client checksum:" << client_file_check_sum;
-        dfs_log(LL_DEBUG) << "Server checksum:" << server_file_check_sum;
+        dfs_log(LL_DEBUG) << "Client checksum:" << client_file_checksum;
+        dfs_log(LL_DEBUG) << "Server checksum:" << server_file_checksum;
 
 
-        if(server_file_check_sum == client_file_check_sum){
+        if(server_file_checksum == client_file_checksum){
             dfs_log(LL_DEBUG) << "Equal checksums";
             return true;
         }
         dfs_log(LL_DEBUG) << "Checksums not the same";
         return false;
     
-        
-
-
     }
 
 
@@ -223,7 +291,6 @@ public:
         
         dfs_log(LL_DEBUG) << "Starting ProcessQueuedRequests";
 
-
         while(true) {
 
             //
@@ -276,21 +343,30 @@ public:
     Status RequestWriteLock(ServerContext *context, const file *request, writeLock *response) override {
 
         const string client_id = request->client_id();
+        const string file_name = request->file_name();
 
-        dfs_log(LL_DEBUG) << client_id << " requesting WriteLock for file: " << request->file_name(); 
-    
+        dfs_log(LL_DEBUG) << client_id << " requesting WriteLock for file: " << file_name; 
 
-        // TODO - lock for individual files
-        if(mount_mutex.try_lock()){
-            dfs_log(LL_DEBUG) << "Obtained lock";
+        if(get_write_lock(file_name.c_str(), client_id.c_str())){
             return Status::OK;
         }
         else{
-            dfs_log(LL_ERROR) << "Server files locked";
-            return Status(StatusCode::RESOURCE_EXHAUSTED, "Server files locked");
+            dfs_log(LL_ERROR) << "Cannot obtain file lock.";
+            return Status(StatusCode::RESOURCE_EXHAUSTED, "This file is locked");
         }
+    
 
-        //return Status::OK;
+        // // TODO - lock for individual files
+        // if(mount_mutex.try_lock()){
+        //     dfs_log(LL_DEBUG) << "Obtained lock";
+        //     return Status::OK;
+        // }
+        // else{
+        //     
+        //     return Status(StatusCode::RESOURCE_EXHAUSTED, "Server files locked");
+        // }
+
+        // //return Status::OK;
 
     }
 
@@ -313,6 +389,16 @@ public:
 
         const string &full_path = WrapPath(file_name);
 
+        print_write_locks();
+
+        dfs_log(LL_DEBUG) << "Checking we have lock for file:" << file_name.c_str();
+
+        // check we have lock
+        if(!get_write_lock(file_name.c_str(), chunk.client_id())){
+            dfs_log(LL_ERROR) << "Don't have lock in Store";
+            return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
+        }
+
         // check if file already exists on server
         struct stat file_status;   
         if(stat(full_path.c_str(), &file_status) == 0){ // file exists
@@ -326,9 +412,10 @@ public:
                 modified_time.modtime = client_modified_time;
                 utime(full_path.c_str(), &modified_time);
                 
-                dfs_log(LL_DEBUG) << "Unlock in Store";
-                mount_mutex.unlock();
+                // dfs_log(LL_DEBUG) << "Unlock in Store";
+                // mount_mutex.unlock();
                 //dfs_log(LL_DEBUG) << "CHECKSUM SAME IN STORE";
+                release_file_lock(file_name.c_str());
                 return Status(StatusCode::ALREADY_EXISTS, "same file contents");
 
             }
@@ -344,8 +431,9 @@ public:
         while(reader->Read(&chunk)){ 
 
             if (context->IsCancelled()) {
-                dfs_log(LL_DEBUG) << "Unlock after cancelled Store";
-                mount_mutex.unlock();
+                // dfs_log(LL_DEBUG) << "Unlock after cancelled Store";
+                // mount_mutex.unlock();
+                release_file_lock(file_name.c_str());
                 return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Store: Deadline exceeded or client cancelled");
             }
 
@@ -364,14 +452,15 @@ public:
         modified_time.modtime = client_modified_time;
         utime(full_path.c_str(), &modified_time);
 
-        dfs_log(LL_DEBUG) << "Unlock after Store";
-        mount_mutex.unlock();
+        // dfs_log(LL_DEBUG) << "Unlock after Store";
+        // mount_mutex.unlock();
 
         response->set_file_name(file_name);
 
         //Status status = reader->Finish();
 
-        
+        //dfs_log(LL_DEBUG) << "";
+        release_file_lock(file_name.c_str());
 
         printf("Completed Store\n");
 
@@ -385,6 +474,13 @@ public:
         
         // get file path
         const string &full_path = WrapPath(request->file_name());
+
+        // check file write lock
+        // string file_name = request->file_name();
+        // if(is_locked(file_name)){
+        //     dfs_log(LL_DEBUG) << "file is locked for writing";
+        //     return Status(StatusCode::RESOURCE_EXHAUSTED, "File is write locked");
+        // }
 
         // extract checksum
         uint32 client_checksum = request->check_sum();
@@ -422,8 +518,8 @@ public:
             // input file stream
             ifstream server_file;
 
-            mount_mutex.lock();
-            dfs_log(LL_DEBUG) << "Shared lock in Fetch";
+            // mount_mutex.lock();
+            // dfs_log(LL_DEBUG) << "Shared lock in Fetch";
 
             server_file.open(full_path);
 
@@ -432,8 +528,8 @@ public:
 
                 if (context->IsCancelled()) {
 
-                    dfs_log(LL_DEBUG) << "Unlock shared after cancelled Fetch";
-                    mount_mutex.unlock();
+                    // dfs_log(LL_DEBUG) << "Unlock shared after cancelled Fetch";
+                    // mount_mutex.unlock();
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
                 }
 
@@ -450,8 +546,8 @@ public:
 
             }
             server_file.close();
-            dfs_log(LL_DEBUG) << "Unlock shared after Fetch";
-            mount_mutex.unlock();
+            // dfs_log(LL_DEBUG) << "Unlock shared after Fetch";
+            // mount_mutex.unlock();
             
             printf("Sent %s to client\n", full_path.c_str());
 
@@ -464,31 +560,43 @@ public:
 
         dfs_log(LL_DEBUG) << "Calling DeleteFile";
 
+        string file_name = request->file_name();
+        string client_id = request->client_id();
+
         // get file path
-        const string &full_path = WrapPath(request->file_name());
+        const string &full_path = WrapPath(file_name);
+
+        // check we have lock
+        if(!get_write_lock(file_name, client_id)){
+            return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
+        }
 
         // check file exists
         struct stat buffer;   
         if(stat(full_path.c_str(), &buffer) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
-            dfs_log(LL_DEBUG) << "Unlock in Delete - file not found";
-            mount_mutex.unlock();
+            // dfs_log(LL_DEBUG) << "Unlock in Delete - file not found";
+            // mount_mutex.unlock();
+            release_file_lock(file_name);
             return Status(StatusCode::NOT_FOUND, "File not found");
         }
         if (context->IsCancelled()) {
-            dfs_log(LL_DEBUG) << "Unlock in cancelled Delete";
-            mount_mutex.unlock();
+            // dfs_log(LL_DEBUG) << "Unlock in cancelled Delete";
+            // mount_mutex.unlock();
+            release_file_lock(file_name);
             return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Delete: Deadline exceeded or client cancelled");
         }
 
         // delete it
         remove(full_path.c_str()); // TODO error check
 
-        dfs_log(LL_DEBUG) << "Unlock after Delete";
-        mount_mutex.unlock();
+        // dfs_log(LL_DEBUG) << "Unlock after Delete";
+        // mount_mutex.unlock();
 
         printf("removed %s\n",full_path.c_str());
+
+        release_file_lock(file_name);
 
         return Status::OK;
 
@@ -503,13 +611,25 @@ public:
         // get file path
         const string &full_path = WrapPath(request->file_name());
 
+    
         // check file exists
-        struct stat buffer;   
-        if(stat (full_path.c_str(), &buffer) != 0){
+        struct stat file_status;   
+        if(stat (full_path.c_str(), &file_status) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
             return Status(StatusCode::NOT_FOUND, "File not found");
         }
+
+        // set checksum
+        uint32_t server_file_checksum = dfs_file_checksum(full_path, &crc_table); 
+        response->set_check_sum(server_file_checksum);
+
+        // set modified time
+        response->set_modified(file_status.st_mtime);
+
+        // set file size
+        response->set_file_size(file_status.st_size);
+
         if (context->IsCancelled()) {
             return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Status: Deadline exceeded or client cancelled");
         }
@@ -521,10 +641,9 @@ public:
 
         dfs_log(LL_DEBUG) << "Calling ListFiles";
 
-        dfs_log(LL_DEBUG) << "Shared lock in List";
 
-        mount_mutex.lock();
-        dfs_log(LL_DEBUG) << "Shared locked in List";
+        // mount_mutex.lock();
+        // dfs_log(LL_DEBUG) << "Shared locked in List";
 
 
         // https://stackoverflow.com/a/46105710
@@ -541,8 +660,8 @@ public:
 
                 if (context->IsCancelled()) {
                     
-                    dfs_log(LL_DEBUG) << "Unlock shared in List";
-                    mount_mutex.unlock();
+                    // dfs_log(LL_DEBUG) << "Unlock shared in List";
+                    // mount_mutex.unlock();
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Delete: Deadline exceeded or client cancelled");
                     
                 }
@@ -572,8 +691,8 @@ public:
             closedir(dir);
             
         }
-        dfs_log(LL_DEBUG) << "Unlock shared after List";
-        mount_mutex.unlock();
+        //dfs_log(LL_DEBUG) << "Unlock shared after List";
+        //mount_mutex.unlock();
 
         return Status::OK;
     }

@@ -81,6 +81,8 @@ message fileStatus{
     int64 file_size = 2;
     int64 created = 3;
     int64 modified = 4;
+    uint32 check_sum = 5;
+    
 }
 
 message writeLock{
