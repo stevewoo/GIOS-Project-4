@@ -90,7 +90,15 @@ private:
     /** The vector of queued tags used to manage asynchronous requests **/
     std::vector<QueueRequest<FileRequestType, FileListResponseType>> queued_tags;
 
-    
+    struct lock_holder {
+
+        lock_holder(){}; // default constructor
+
+        lock_holder(std::string new_client_id, int new_reader_count) 
+        : client_id(new_client_id), reader_count(new_reader_count) {}
+        std::string client_id;
+        int reader_count;
+    };
 
 
     /**
@@ -112,42 +120,47 @@ private:
     //std::shared_timed_mutex read_mutex;
 
     std::mutex file_map_mutex;
-    map<string, string> file_client_map;
+    map<string, lock_holder> file_client_map;
 
     bool get_write_lock(std::string file_name, std::string client_id){
 
         const std::lock_guard<std::mutex> lock(file_map_mutex);
 
-        dfs_log(LL_DEBUG) << "Getting read lock for" << file_name;
+        dfs_log(LL_DEBUG) << client_id << " requesting lock for " << file_name;
 
-        if(strlen(file_name.c_str()) < 1){
-            dfs_log(LL_ERROR) << file_name << "WRITELOCK: BLANK FILE NAME";
-            throw exception();
-        }
+        //dfs_log(LL_DEBUG) << "Getting write lock for" << file_name;
+
+        // if(strlen(file_name.c_str()) < 1){
+        //     dfs_log(LL_ERROR) << file_name << "WRITELOCK: BLANK FILE NAME";
+        //     throw exception();
+        // }
 
         // check if file in map
         if (file_client_map.find(file_name) == file_client_map.end()) {
             // file not in map - insert client_id for this file
 
             dfs_log(LL_DEBUG) << file_name << " locked by " << client_id;
-            file_client_map[file_name] = client_id;
+            file_client_map[file_name] = lock_holder(client_id, -1);
 
             return true;
 
-        } else { // file in map - check client_id, if same client_id return true
-        
-            std::string client_id_with_lock = file_client_map.at(file_name);
+        } else { // file in map - check client_id, if same client_id return true         
+            
+            lock_holder file_lock_status = file_client_map.at(file_name);
 
-            dfs_log(LL_DEBUG) << client_id << " requesting lock for " << file_name;
-            //print_file_locks();
+            if(file_lock_status.reader_count < 1){ // no client reading from file
 
+                std::string client_id_with_lock = file_lock_status.client_id;
 
-            if(client_id == client_id_with_lock){
-                return true;
+                // check same client not trying to write
+                if(client_id == client_id_with_lock){
+                    return true;
+                }
             }
-
+            
+            //print_file_locks();
         }  
-        return false;
+        return false; // either being written by another client, or being read
 
     }
 
@@ -155,35 +168,50 @@ private:
 
         const std::lock_guard<std::mutex> lock(file_map_mutex);
 
-        dfs_log(LL_DEBUG) << "Getting read lock for" << file_name;
+        //dfs_log(LL_DEBUG) << "Getting read lock for" << file_name;
 
-        print_file_locks();
+        //print_file_locks();
 
-        if(strlen(file_name.c_str()) < 1){
-            dfs_log(LL_ERROR) << file_name << "READLOCK: BLANK FILE NAME";
-            throw exception();
-        }
+        // if(strlen(file_name.c_str()) < 1){
+        //     dfs_log(LL_ERROR) << file_name << "READLOCK: BLANK FILE NAME";
+        //     throw exception();
+        // }
 
         // check if file in map
         if (file_client_map.find(file_name) == file_client_map.end()) {
-            // file not in map - insert client_id for this file
+            // file not in map - insert "reader" for this file
 
             //dfs_log(LL_DEBUG) << file_name << " locked for reading";
-            file_client_map[file_name] = "reading";
-            dfs_log(LL_DEBUG) << "Got first read lock for " << file_name;
+            file_client_map[file_name] = lock_holder("reading", 1);
+            //dfs_log(LL_DEBUG) << "Got first read lock for " << file_name;
             return true;
 
         } else { // file in map - check if reading or writing
         
-            std::string file_lock_status = file_client_map.at(file_name); // will be either "reading" or a clientID
-            //print_file_locks();
+            lock_holder file_lock_status = file_client_map.at(file_name);
 
-            if(file_lock_status == "reading"){
-                dfs_log(LL_DEBUG) << "Got shared read lock for " << file_name;
+            if(file_lock_status.reader_count == -1){ // currently writing
+
+                return false;
+            } 
+            else if (file_lock_status.client_id == "reading"){ // currently open for reading
+
+                // increment read counter
+                //print_file_locks();
+
+                file_client_map[file_name] = lock_holder("reading", file_lock_status.reader_count+1);
+
+                dfs_log(LL_DEBUG) << "Incremented read lock for " << file_name;
+
+                print_file_locks();
+
                 return true;
             }
         }  
-        return false;
+        
+        dfs_log(LL_DEBUG) << "Unexpected in read lock for " << file_name;
+        throw exception();
+        return false; // something went wrong
     }
 
     // bool is_write_locked(std::string file_name){
@@ -201,10 +229,10 @@ private:
 
     void print_file_locks(){
         // print map contents
-        map<string, string>::iterator itr;
+        map<string, lock_holder>::iterator itr;
         dfs_log(LL_DEBUG) << "KEY\tELEMENT";
         for (itr = file_client_map.begin(); itr != file_client_map.end(); ++itr) {
-            dfs_log(LL_DEBUG) << itr->first << '\t' << itr->second << '\n';
+            dfs_log(LL_DEBUG) << itr->first << '\t' << itr->second.client_id << '\t' << itr->second.reader_count << '\n';
         }
     }
 
@@ -212,9 +240,28 @@ private:
 
         const std::lock_guard<std::mutex> lock(file_map_mutex);
 
-        // remove file (and client_id from map)
-        file_client_map.erase(file_name); // TODO error check?
-        //dfs_log(LL_DEBUG) << file_name << " lock released";
+        lock_holder file_lock_status = file_client_map.at(file_name);
+
+        if(file_lock_status.reader_count == -1 || file_lock_status.reader_count == 1){ // writer
+
+            // remove file (and client_id from map)
+            file_client_map.erase(file_name); // TODO error check?
+            //dfs_log(LL_DEBUG) << file_name << " lock released";
+        }
+        else if(file_lock_status.client_id == "reading"){
+
+            // decrement read counter
+            dfs_log(LL_DEBUG) << "Decrement read lock for " << file_name;
+            //print_file_locks();
+            file_client_map[file_name] = lock_holder("reading", file_lock_status.reader_count - 1);
+            print_file_locks();
+
+        }
+        else{
+            
+            dfs_log(LL_ERROR) << "Why are we here? Bad lock for " << file_name;
+            throw exception();
+        }
 
     }
 
@@ -240,7 +287,6 @@ private:
         return false;
     
     }
-
 
 public:
 
@@ -314,7 +360,7 @@ public:
 
         dfs_log(LL_DEBUG) << "Handling ProcessCallback";
 
-        print_file_locks();
+        //print_file_locks();
 
         listFilesRequest dummy_request;
 
@@ -522,6 +568,7 @@ public:
 
         while(!get_read_lock(file_name)){ // spin
             dfs_log(LL_ERROR) << "Spinning - don't have read lock in Fetch";
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             // return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
         }
 
@@ -575,6 +622,7 @@ public:
 
                     // dfs_log(LL_DEBUG) << "Unlock shared after cancelled Fetch";
                     // mount_mutex.unlock();
+                    server_file.close();
                     release_file_lock(file_name);
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
                 }
@@ -663,6 +711,7 @@ public:
 
         while(!get_read_lock(file_name)){ // spin
             dfs_log(LL_ERROR) << "Spinning - don't have read lock in Stat";
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             // return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
         }
 
@@ -728,6 +777,7 @@ public:
 
                     while(!get_read_lock(file_name)){ // spin
                         dfs_log(LL_ERROR) << "Spinning - don't have read lock in List";
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
                         // return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
                     }
 
@@ -807,3 +857,5 @@ void DFSServerNode::Start() {
 //
 // Add your additional definitions here
 //
+
+

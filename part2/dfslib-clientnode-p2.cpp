@@ -276,20 +276,24 @@ grpc::StatusCode DFSClientNodeP2::Fetch(const std::string &filename) {
         dfs_log(LL_ERROR) << "0 CHECKSUM in Fetch - empty file?";
     }
 
+    fileStatus response;
+    dfs_log(LL_DEBUG) << "Calling FileStatus";
+    Status statStatus = service_stub->FileStatus(&statContext, statRequest, &response);
+
+    if(statStatus.error_code() == StatusCode::NOT_FOUND){
+        return StatusCode::NOT_FOUND;
+    }
+
     // check file exists on client
     struct stat file_status;   
     if(stat(full_path.c_str(), &file_status) == 0){ // file already on client
 
         // call Stat - get mod time and checksum
         dfs_log(LL_DEBUG) << "File found on client already";
-        dfs_log(LL_DEBUG) << "Mod time: " << file_status.st_mtime;
+        //dfs_log(LL_DEBUG) << "Mod time: " << file_status.st_mtime;
 
         int64_t client_modified = file_status.st_mtime;
 
-        fileStatus response;
-        dfs_log(LL_DEBUG) << "Calling FileStatus";
-        Status status = service_stub->FileStatus(&statContext, statRequest, &response);
-        
         dfs_log(LL_DEBUG) << "Getting modified";
         int64_t server_modified = response.modified();
 
@@ -707,7 +711,7 @@ void DFSClientNodeP2::HandleCallbackList() {
                         }
                         closedir(dir);
                     }
-                    client_startup_done = true;
+                    client_startup_done = true; // won't do again
 
                 }
 
@@ -796,7 +800,7 @@ void DFSClientNodeP2::HandleCallbackList() {
             // Once we're complete, deallocate the call_data object.
             delete call_data;
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000)); // TODO remove - used for easier debugging
+            //std::this_thread::sleep_for(std::chrono::milliseconds(50)); // TODO remove - used for easier debugging
 
             //
             // STUDENT INSTRUCTION:

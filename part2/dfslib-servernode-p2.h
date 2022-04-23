@@ -28,6 +28,8 @@ private:
     /** Server callback **/
     std::function<void()> grader_callback;
 
+    
+
 public:
     DFSServerNode(const std::string& server_address,
         const std::string& mount_path,
@@ -37,5 +39,7 @@ public:
     void Shutdown();
     void Start();
 };
+
+
 
 #endif
