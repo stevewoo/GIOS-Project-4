@@ -118,6 +118,13 @@ private:
 
         const std::lock_guard<std::mutex> lock(file_map_mutex);
 
+        dfs_log(LL_DEBUG) << "Getting read lock for" << file_name;
+
+        if(strlen(file_name.c_str()) < 1){
+            dfs_log(LL_ERROR) << file_name << "WRITELOCK: BLANK FILE NAME";
+            throw exception();
+        }
+
         // check if file in map
         if (file_client_map.find(file_name) == file_client_map.end()) {
             // file not in map - insert client_id for this file
@@ -132,7 +139,7 @@ private:
             std::string client_id_with_lock = file_client_map.at(file_name);
 
             dfs_log(LL_DEBUG) << client_id << " requesting lock for " << file_name;
-            print_write_locks();
+            //print_file_locks();
 
 
             if(client_id == client_id_with_lock){
@@ -144,20 +151,55 @@ private:
 
     }
 
-    bool is_locked(std::string file_name){
+    bool get_read_lock(std::string file_name){
 
         const std::lock_guard<std::mutex> lock(file_map_mutex);
 
-        // check if file in map
-        if (file_client_map.find(file_name) != file_client_map.end() ) {
-            dfs_log(LL_DEBUG) << file_name << " is currently locked for writing";
-            return true;
-        }
-        return false;
+        dfs_log(LL_DEBUG) << "Getting read lock for" << file_name;
 
+        print_file_locks();
+
+        if(strlen(file_name.c_str()) < 1){
+            dfs_log(LL_ERROR) << file_name << "READLOCK: BLANK FILE NAME";
+            throw exception();
+        }
+
+        // check if file in map
+        if (file_client_map.find(file_name) == file_client_map.end()) {
+            // file not in map - insert client_id for this file
+
+            //dfs_log(LL_DEBUG) << file_name << " locked for reading";
+            file_client_map[file_name] = "reading";
+            dfs_log(LL_DEBUG) << "Got first read lock for " << file_name;
+            return true;
+
+        } else { // file in map - check if reading or writing
+        
+            std::string file_lock_status = file_client_map.at(file_name); // will be either "reading" or a clientID
+            //print_file_locks();
+
+            if(file_lock_status == "reading"){
+                dfs_log(LL_DEBUG) << "Got shared read lock for " << file_name;
+                return true;
+            }
+        }  
+        return false;
     }
 
-    void print_write_locks(){
+    // bool is_write_locked(std::string file_name){
+
+    //     const std::lock_guard<std::mutex> lock(file_map_mutex);
+
+    //     // check if file in map
+    //     if (file_client_map.find(file_name) != file_client_map.end() ) {
+    //         dfs_log(LL_DEBUG) << file_name << " is currently locked for writing";
+    //         return true;
+    //     }
+    //     return false;
+
+    // }
+
+    void print_file_locks(){
         // print map contents
         map<string, string>::iterator itr;
         dfs_log(LL_DEBUG) << "KEY\tELEMENT";
@@ -171,8 +213,8 @@ private:
         const std::lock_guard<std::mutex> lock(file_map_mutex);
 
         // remove file (and client_id from map)
-        file_client_map.erase(file_name);
-        dfs_log(LL_DEBUG) << file_name << " lock released";
+        file_client_map.erase(file_name); // TODO error check?
+        //dfs_log(LL_DEBUG) << file_name << " lock released";
 
     }
 
@@ -270,8 +312,9 @@ public:
         // is aware of. The client will then need to make the appropriate calls based on those changes.
         //
 
-        dfs_log(LL_DEBUG) << "Handling ProcessCallback for " << request->file_name(); // TODO blank
-        dfs_log(LL_DEBUG) << "Handling ProcessCallback for " << request->name();
+        dfs_log(LL_DEBUG) << "Handling ProcessCallback";
+
+        print_file_locks();
 
         listFilesRequest dummy_request;
 
@@ -389,7 +432,7 @@ public:
 
         const string &full_path = WrapPath(file_name);
 
-        print_write_locks();
+        print_file_locks();
 
         dfs_log(LL_DEBUG) << "Checking we have lock for file:" << file_name.c_str();
 
@@ -475,12 +518,12 @@ public:
         // get file path
         const string &full_path = WrapPath(request->file_name());
 
-        // check file write lock
-        // string file_name = request->file_name();
-        // if(is_locked(file_name)){
-        //     dfs_log(LL_DEBUG) << "file is locked for writing";
-        //     return Status(StatusCode::RESOURCE_EXHAUSTED, "File is write locked");
-        // }
+        string file_name = request->file_name();
+
+        while(!get_read_lock(file_name)){ // spin
+            dfs_log(LL_ERROR) << "Spinning - don't have read lock in Fetch";
+            // return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
+        }
 
         // extract checksum
         uint32 client_checksum = request->check_sum();
@@ -494,6 +537,7 @@ public:
         if(stat(full_path.c_str(), &file_status) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
+            release_file_lock(file_name);
             return Status(StatusCode::NOT_FOUND, "File not found");
         }
         else if(check_sum_the_same(client_checksum, full_path.c_str())){ // same contents
@@ -504,6 +548,7 @@ public:
 
             // TODO: send updated mod time here?
             dfs_log(LL_DEBUG) << "CHECKSUM SAME IN FETCH";
+            release_file_lock(file_name);
             
             return Status(StatusCode::ALREADY_EXISTS, "same file contents");
 
@@ -530,6 +575,7 @@ public:
 
                     // dfs_log(LL_DEBUG) << "Unlock shared after cancelled Fetch";
                     // mount_mutex.unlock();
+                    release_file_lock(file_name);
                     return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Fetch: Deadline exceeded or client cancelled");
                 }
 
@@ -548,10 +594,12 @@ public:
             server_file.close();
             // dfs_log(LL_DEBUG) << "Unlock shared after Fetch";
             // mount_mutex.unlock();
+            release_file_lock(file_name);
             
             printf("Sent %s to client\n", full_path.c_str());
 
         }
+        release_file_lock(file_name);
         return Status::OK;
 
     }
@@ -611,12 +659,20 @@ public:
         // get file path
         const string &full_path = WrapPath(request->file_name());
 
+        string file_name = request->file_name();
+
+        while(!get_read_lock(file_name)){ // spin
+            dfs_log(LL_ERROR) << "Spinning - don't have read lock in Stat";
+            // return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
+        }
+
     
         // check file exists
         struct stat file_status;   
         if(stat (full_path.c_str(), &file_status) != 0){
             // file not found
             printf("File not found: %s\n",full_path.c_str());
+            release_file_lock(file_name);
             return Status(StatusCode::NOT_FOUND, "File not found");
         }
 
@@ -630,6 +686,8 @@ public:
         // set file size
         response->set_file_size(file_status.st_size);
 
+        release_file_lock(file_name);
+
         if (context->IsCancelled()) {
             return Status(StatusCode::DEADLINE_EXCEEDED, "Server abandoned Status: Deadline exceeded or client cancelled");
         }
@@ -640,11 +698,6 @@ public:
     Status ListFiles(ServerContext* context, const listFilesRequest* request, files *response) override {
 
         dfs_log(LL_DEBUG) << "Calling ListFiles";
-
-
-        // mount_mutex.lock();
-        // dfs_log(LL_DEBUG) << "Shared locked in List";
-
 
         // https://stackoverflow.com/a/46105710
         if (auto dir = opendir(mount_path.c_str())) {
@@ -669,7 +722,14 @@ public:
                 //printf("dirent: %s\n", file->d_name);
                 if (file->d_name && file->d_name[0] != '.'&& file->d_type != DT_DIR ){
 
-                    printf("File: %s\n", file->d_name);
+                    //printf("File: %s\n", file->d_name);
+
+                    string file_name = file->d_name;
+
+                    while(!get_read_lock(file_name)){ // spin
+                        dfs_log(LL_ERROR) << "Spinning - don't have read lock in List";
+                        // return Status(StatusCode::RESOURCE_EXHAUSTED, "Haven't got lock");
+                    }
 
                     // add file to response
                     fileStatus *file_meta = response->add_file();
@@ -684,6 +744,8 @@ public:
                     stat(full_path.c_str(), &file_status); // TODO error check
                     int64 modified_time = file_status.st_mtime;
                     file_meta->set_modified(modified_time);
+
+                    release_file_lock(file_name);
                     
                 }
 

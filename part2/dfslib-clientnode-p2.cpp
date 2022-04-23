@@ -17,6 +17,7 @@
 #include <sys/inotify.h>
 #include <grpcpp/grpcpp.h>
 #include <utime.h>
+#include <dirent.h>
 
 #include "src/dfs-utils.h"
 #include "src/dfslibx-clientnode-p2.h"
@@ -52,6 +53,8 @@ using FileListResponseType = files; //FileList;
 
 DFSClientNodeP2::DFSClientNodeP2() : DFSClientNode() {}
 DFSClientNodeP2::~DFSClientNodeP2() {}
+
+bool client_startup_done = false;
 
 
 grpc::StatusCode DFSClientNodeP2::Store(const std::string &filename) {
@@ -662,7 +665,51 @@ void DFSClientNodeP2::HandleCallbackList() {
 
                 //dfs_log(LL_DEBUG) << "Handling async callback ";
 
-                //this->List()
+                if(!client_startup_done){
+
+                    // go through all files on client, if not on server - remove
+                    dfs_log(LL_DEBUG) << "Files on client"; 
+                    // https://stackoverflow.com/a/46105710
+                    if (auto dir = opendir(mount_path.c_str())) {
+
+                        while (auto client_file = readdir(dir)) {
+
+                            if (client_file->d_name && client_file->d_name[0] != '.'&& client_file->d_type != DT_DIR ){
+
+                                printf("Client file: %s\n", client_file->d_name);
+
+                                const string &full_path = WrapPath(client_file->d_name);
+                                
+                                ClientContext statContext;
+                                
+                                file statRequest;
+                                statRequest.set_file_name(client_file->d_name);
+
+                                fileStatus response;
+
+                                Status status = service_stub->FileStatus(&statContext, statRequest, &response);
+
+
+                                if(status.error_code() == StatusCode::NOT_FOUND){
+
+                                    // remove client copy
+
+                                    struct stat buffer;   
+                                    if(stat(full_path.c_str(), &buffer) != 0){ // check file exists
+                                        // file not found
+                                        printf("Can't delete file - File not found: %s\n", full_path.c_str());
+
+                                    }
+                                    // delete it
+                                    remove(full_path.c_str()); // TODO error check
+                                }
+                            }
+                        }
+                        closedir(dir);
+                    }
+                    client_startup_done = true;
+
+                }
 
                 // go through each file on server - update client mount appropriately
                 for(const fileStatus &serverFileStatus : call_data->reply.file()){
@@ -749,7 +796,7 @@ void DFSClientNodeP2::HandleCallbackList() {
             // Once we're complete, deallocate the call_data object.
             delete call_data;
 
-            //std::this_thread::sleep_for(std::chrono::milliseconds(2000)); // TODO remove - used for easier debugging
+            std::this_thread::sleep_for(std::chrono::milliseconds(2000)); // TODO remove - used for easier debugging
 
             //
             // STUDENT INSTRUCTION:
