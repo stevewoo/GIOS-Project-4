@@ -297,7 +297,7 @@ StatusCode DFSClientNodeP1::Stat(const std::string &filename, void* file_status)
     // set timeout
     context.set_deadline(get_deadline());
 
-    fileStatusResponse response;
+    fileResponse response;
 
     Status status = service_stub->FileStatus(&context, request, &response);
 
@@ -372,7 +372,7 @@ StatusCode DFSClientNodeP1::List(std::map<std::string,int>* file_map, bool displ
 
     }
 
-    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){ // for the case where there are no files
+    if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){ 
         return StatusCode::DEADLINE_EXCEEDED;
     }
     if(!status.ok()) {

@@ -99,10 +99,6 @@ public:
     // implementations of your protocol service methods
     //
 
-    // Status MyMethod(ServerContext* context, const MyMessageType* request, ServerWriter<MySegmentType> *writer) override {
-
-    //      /** code implementation here **/
-    //  }
 
     Status StoreFile(ServerContext *context, ServerReader<fileSegment> *reader, fileResponse *response) override {
 
@@ -191,7 +187,6 @@ public:
             }
             server_file.close();
             
-            
             printf("Sent %s to client\n", full_path.c_str());
 
         }
@@ -224,7 +219,7 @@ public:
 
     
 
-    Status FileStatus(ServerContext* context, const file* request, fileStatusResponse *response) override {
+    Status FileStatus(ServerContext* context, const file* request, fileResponse *response) override {
 
 
         // get file path

@@ -21,7 +21,7 @@ service DFSService {
     rpc ListFiles(listFilesRequest) returns (files);
 
     // 5. REQUIRED (Parts 1 & 2): A method to get the status of a file on the server
-    rpc FileStatus(file) returns (fileStatusResponse);
+    rpc FileStatus(file) returns (fileResponse);
 
     // 7. Any other methods you deem necessary to complete the tasks of this assignment
     // https://grpc.io/docs/languages/cpp/quickstart/
@@ -30,7 +30,6 @@ service DFSService {
 }
 
 // Add your message types here
-
 
 message file{
     string file_name = 1;
@@ -43,7 +42,9 @@ message fileSegment{
 
 message fileResponse{
     string file_name = 1;
-    int64 modified = 2;
+    int64 file_size = 2;
+    int64 created = 3;
+    int64 modified = 4;
 }
 
 message listFilesRequest{
@@ -54,13 +55,10 @@ message files{
     repeated fileResponse file = 1;
 }
 
-message fileStatusResponse{
-    string file_name = 1;
-    int64 file_size = 2;
-    int64 created = 3;
-    int64 modified = 4;
+// message fileStatusResponse{
+    
 
-}
+// }
 
 
 // The request message containing the user's name.
