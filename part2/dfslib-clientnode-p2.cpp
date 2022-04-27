@@ -483,9 +483,9 @@ grpc::StatusCode DFSClientNodeP2::List(std::map<std::string,int>* file_map, bool
 
     for(const fileStatus &file : response.file()){
 
-        if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){
-            return StatusCode::DEADLINE_EXCEEDED;
-        }
+        // if(status.error_code() == StatusCode::DEADLINE_EXCEEDED){ // TODO removed. Why would this change?
+        //     return StatusCode::DEADLINE_EXCEEDED;
+        // }
 
         // https://stackoverflow.com/questions/13542345/how-to-convert-st-mtime-which-get-from-stat-function-to-string-or-char
         time_t modified = (time_t)file.modified();
@@ -789,8 +789,8 @@ void DFSClientNodeP2::HandleCallbackList() {
 
                 //dfs_log(LL_DEBUG) << "Unlocking...";
                 mount_mutex.unlock();
-                //dfs_log(LL_DEBUG) << "Unlocked.";
-
+                //dfs_log(LL_DEBUG) << "Unlocked."; 
+                
             } else {
                 dfs_log(LL_ERROR) << "Status was not ok. Will try again in " << DFS_RESET_TIMEOUT << " milliseconds.";
                 dfs_log(LL_ERROR) << call_data->status.error_message();
